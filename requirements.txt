@@ -1,0 +1,48 @@
+# FastAPI and ASGI Server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Data Validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Image Processing Core
+opencv-python==4.8.1.78
+Pillow==10.1.0
+numpy==1.26.2
+
+# Face Detection and Recognition
+mediapipe==0.10.8
+face-recognition==1.3.0
+dlib==19.24.2
+
+# MRZ Reading and Passport Processing
+PassportEye==2.2.0
+pytesseract==0.3.10
+
+# PyMRTD for ICAO 9303 (requires additional setup)
+# Note: PyMRTD may need manual installation from source
+# Uncomment if using: pymrtd
+
+# Async File I/O
+aiofiles==23.2.1
+
+# HTTP Client for Testing
+httpx==0.25.2
+
+# Testing Framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# Python Decouple for Environment Variables
+python-decouple==3.8
+
+# Logging and Monitoring
+python-json-logger==2.0.7
+
+# Optional: Commercial Document Verification APIs
+# Uncomment if needed:
+# idanalyzer==1.3.0
+# biogaze (requires separate installation)
