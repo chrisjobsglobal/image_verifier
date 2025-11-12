@@ -1,30 +1,40 @@
-"""Face Detection and Analysis Service using MediaPipe and face_recognition"""
+"""Face Detection and Analysis Service using face_recognition (with optional MediaPipe)"""
 
 from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
-import mediapipe as mp
 import face_recognition
 from app.core.config import settings
+
+# MediaPipe is optional - will use fallback methods if not available
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    print("⚠️  MediaPipe not available - using OpenCV fallback for facial landmarks")
 
 
 class FaceDetectionService:
     """Service for face detection, landmark detection, and facial analysis"""
     
     def __init__(self):
-        # Initialize MediaPipe Face Mesh
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=settings.mediapipe_min_detection_confidence,
-            min_tracking_confidence=settings.mediapipe_min_tracking_confidence
-        )
-        
-        # Initialize MediaPipe Drawing
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        # Initialize MediaPipe Face Mesh if available
+        if MEDIAPIPE_AVAILABLE:
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=settings.mediapipe_min_detection_confidence,
+                min_tracking_confidence=settings.mediapipe_min_tracking_confidence
+            )
+            
+            # Initialize MediaPipe Drawing
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+        else:
+            self.face_mesh = None
         
         # Face detection settings
         self.min_face_percentage = settings.min_face_percentage
@@ -99,50 +109,57 @@ class FaceDetectionService:
                 f"Face is not centered (offset: {offset:.1f}%)"
             )
         
-        # Analyze with MediaPipe for detailed landmarks
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        mp_results = self.face_mesh.process(rgb_image)
-        
-        if mp_results.multi_face_landmarks:
-            face_landmarks = mp_results.multi_face_landmarks[0]
+        # Analyze with MediaPipe for detailed landmarks (if available)
+        if self.face_mesh:
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_results = self.face_mesh.process(rgb_image)
             
-            # Check head tilt
-            tilt_angle = self.calculate_head_tilt(face_landmarks, image.shape)
-            results["metrics"]["head_tilt_degrees"] = abs(tilt_angle)
-            
-            if abs(tilt_angle) > self.max_tilt_angle:
-                results["is_valid"] = False
-                results["errors"].append(
-                    f"Head is tilted ({abs(tilt_angle):.1f}°). Maximum allowed tilt: {self.max_tilt_angle}°"
-                )
-            
-            # Check eyes visibility and state
-            eyes_analysis = self.analyze_eyes(face_landmarks, image.shape)
-            results["metrics"]["eyes"] = eyes_analysis
-            
-            if not eyes_analysis["both_eyes_visible"]:
-                results["is_valid"] = False
-                results["errors"].append("Both eyes must be clearly visible")
-            
-            if eyes_analysis["eyes_closed"]:
-                results["is_valid"] = False
-                results["errors"].append("Eyes must be open")
-            
-            # Check gaze direction
-            gaze = self.analyze_gaze_direction(face_landmarks, image.shape)
-            results["metrics"]["gaze"] = gaze
-            
-            if not gaze["looking_at_camera"]:
-                results["is_valid"] = False
-                results["errors"].append("Person must be looking directly at the camera")
-            
-            # Check mouth state
-            mouth_open = self.check_mouth_open(face_landmarks, image.shape)
-            results["metrics"]["mouth_open"] = mouth_open
-            
-            if mouth_open:
-                results["is_valid"] = False
-                results["errors"].append("Mouth must be closed")
+            if mp_results.multi_face_landmarks:
+                face_landmarks = mp_results.multi_face_landmarks[0]
+                
+                # Check head tilt
+                tilt_angle = self.calculate_head_tilt(face_landmarks, image.shape)
+                results["metrics"]["head_tilt_degrees"] = abs(tilt_angle)
+                
+                if abs(tilt_angle) > self.max_tilt_angle:
+                    results["is_valid"] = False
+                    results["errors"].append(
+                        f"Head is tilted ({abs(tilt_angle):.1f}°). Maximum allowed tilt: {self.max_tilt_angle}°"
+                    )
+                
+                # Check eyes visibility and state
+                eyes_analysis = self.analyze_eyes(face_landmarks, image.shape)
+                results["metrics"]["eyes"] = eyes_analysis
+                
+                if not eyes_analysis["both_eyes_visible"]:
+                    results["is_valid"] = False
+                    results["errors"].append("Both eyes must be clearly visible")
+                
+                if eyes_analysis["eyes_closed"]:
+                    results["is_valid"] = False
+                    results["errors"].append("Eyes must be open")
+                
+                # Check gaze direction
+                gaze = self.analyze_gaze_direction(face_landmarks, image.shape)
+                results["metrics"]["gaze"] = gaze
+                
+                if not gaze["looking_at_camera"]:
+                    results["is_valid"] = False
+                    results["errors"].append("Person must be looking directly at the camera")
+                
+                # Check mouth state
+                mouth_open = self.check_mouth_open(face_landmarks, image.shape)
+                results["metrics"]["mouth_open"] = mouth_open
+                
+                if mouth_open:
+                    results["is_valid"] = False
+                    results["errors"].append("Mouth must be closed")
+        else:
+            # MediaPipe not available - add warning
+            results["warnings"].append(
+                "Advanced facial landmark analysis unavailable (MediaPipe not installed). "
+                "Some ICAO compliance checks are limited."
+            )
             
             # Detect glasses
             glasses_detected = self.detect_glasses(image, face_landmarks)
