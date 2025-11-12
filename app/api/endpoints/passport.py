@@ -4,10 +4,11 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from typing import Optional
 import logging
 
+from app.models.request import PassportVerificationRequest
 from app.models.response import PassportVerificationResponse, ErrorResponse, MRZData, ImageMetrics
 from app.services.icao_validator import icao_validator_service
 from app.services.mrz_reader import mrz_reader_service
-from app.utils.image_utils import load_image_from_bytes, validate_image_format, get_file_size
+from app.utils.image_utils import load_image_from_bytes, validate_image_format, get_file_size, download_image_from_url
 from app.core.config import settings
 from app.core.security import verify_api_key
 
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/passport", tags=["Passport Verification"])
     "/verify",
     response_model=PassportVerificationResponse,
     summary="Verify Passport Document",
-    description="Verify a passport document image for quality and ICAO compliance",
+    description="Verify a passport document image for quality and ICAO compliance (accepts file upload or URL)",
     responses={
         200: {"description": "Verification completed successfully"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
@@ -29,7 +30,8 @@ router = APIRouter(prefix="/passport", tags=["Passport Verification"])
     }
 )
 async def verify_passport(
-    file: UploadFile = File(..., description="Passport document image file (JPEG or PNG)"),
+    file: Optional[UploadFile] = File(None, description="Passport document image file (JPEG or PNG)"),
+    image_url: Optional[str] = Form(None, description="URL of the passport image to verify"),
     read_mrz: bool = Form(default=True, description="Attempt to read and validate MRZ"),
     validate_expiration: bool = Form(default=True, description="Check if passport is expired"),
     include_detailed_metrics: bool = Form(default=False, description="Include detailed technical metrics"),
@@ -47,7 +49,8 @@ async def verify_passport(
     - Expiration date validation
     
     Args:
-        file: Passport image file (JPEG or PNG)
+        file: Passport image file (JPEG or PNG) - provide either file or image_url
+        image_url: URL of the passport image - provide either file or image_url
         read_mrz: Attempt to extract MRZ data
         validate_expiration: Check passport expiration
         include_detailed_metrics: Return detailed technical metrics
@@ -56,8 +59,28 @@ async def verify_passport(
         PassportVerificationResponse with validation results
     """
     try:
-        # Read file content
-        content = await file.read()
+        # Ensure either file or URL is provided
+        if not file and not image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'file' or 'image_url' must be provided"
+            )
+        
+        if file and image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'file' or 'image_url', not both"
+            )
+        
+        # Get image content
+        if image_url:
+            # Download from URL
+            content = await download_image_from_url(image_url)
+            content_type = "image/jpeg"  # Will be validated by image_format check
+        else:
+            # Read file content
+            content = await file.read()
+            content_type = file.content_type
         
         # Validate file size
         file_size = get_file_size(content)
@@ -75,11 +98,11 @@ async def verify_passport(
                 detail=f"Invalid image format. Supported formats: {', '.join(settings.allowed_image_types)}"
             )
         
-        # Validate content type
-        if file.content_type not in settings.allowed_image_types:
+        # Validate content type (skip for URLs since we verified format)
+        if file and content_type not in settings.allowed_image_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid content type: {file.content_type}. Allowed types: {', '.join(settings.allowed_image_types)}"
+                detail=f"Invalid content type: {content_type}. Allowed types: {', '.join(settings.allowed_image_types)}"
             )
         
         # Load image
@@ -271,10 +294,11 @@ async def get_passport_requirements():
 @router.post(
     "/extract-mrz",
     summary="Extract MRZ Data Only",
-    description="Extract MRZ data from passport without full validation"
+    description="Extract MRZ data from passport without full validation (accepts file upload or URL)"
 )
 async def extract_mrz_only(
-    file: UploadFile = File(..., description="Passport document image file"),
+    file: Optional[UploadFile] = File(None, description="Passport document image file"),
+    image_url: Optional[str] = Form(None, description="URL of the passport image"),
     api_key: str = Depends(verify_api_key)
 ):
     """
@@ -283,14 +307,33 @@ async def extract_mrz_only(
     This is a lightweight endpoint for quick MRZ extraction.
     
     Args:
-        file: Passport image file
+        file: Passport image file - provide either file or image_url
+        image_url: URL of the passport image - provide either file or image_url
         
     Returns:
         MRZ data if found
     """
     try:
-        # Read file content
-        content = await file.read()
+        # Ensure either file or URL is provided
+        if not file and not image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'file' or 'image_url' must be provided"
+            )
+        
+        if file and image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'file' or 'image_url', not both"
+            )
+        
+        # Get image content
+        if image_url:
+            # Download from URL
+            content = await download_image_from_url(image_url)
+        else:
+            # Read file content
+            content = await file.read()
         
         # Validate file size
         file_size = get_file_size(content)

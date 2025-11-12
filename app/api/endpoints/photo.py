@@ -1,12 +1,13 @@
 """Photo verification API endpoint"""
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Body
 from typing import Optional
 import logging
 
+from app.models.request import PhotoVerificationRequest
 from app.models.response import PhotoVerificationResponse, ErrorResponse, FaceMetrics, ImageMetrics
 from app.services.icao_validator import icao_validator_service
-from app.utils.image_utils import load_image_from_bytes, validate_image_format, get_file_size
+from app.utils.image_utils import load_image_from_bytes, validate_image_format, get_file_size, download_image_from_url
 from app.core.config import settings
 from app.core.security import verify_api_key
 
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/photo", tags=["Photo Verification"])
     "/verify",
     response_model=PhotoVerificationResponse,
     summary="Verify Personal Photo",
-    description="Verify a personal photo for ICAO 9303 compliance",
+    description="Verify a personal photo for ICAO 9303 compliance (accepts file upload or URL)",
     responses={
         200: {"description": "Verification completed successfully"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
@@ -28,7 +29,8 @@ router = APIRouter(prefix="/photo", tags=["Photo Verification"])
     }
 )
 async def verify_photo(
-    file: UploadFile = File(..., description="Photo file to verify (JPEG or PNG)"),
+    file: Optional[UploadFile] = File(None, description="Photo file to verify (JPEG or PNG)"),
+    image_url: Optional[str] = Form(None, description="URL of the image to verify"),
     include_detailed_metrics: bool = Form(default=False, description="Include detailed technical metrics"),
     strict_mode: bool = Form(default=False, description="Enable strict compliance mode"),
     api_key: str = Depends(verify_api_key)
@@ -45,7 +47,8 @@ async def verify_photo(
     - Accessories (glasses) detection
     
     Args:
-        file: Image file (JPEG or PNG)
+        file: Image file (JPEG or PNG) - provide either file or image_url
+        image_url: URL of the image to verify - provide either file or image_url
         include_detailed_metrics: Return detailed technical metrics
         strict_mode: Treat warnings as errors
         
@@ -53,8 +56,28 @@ async def verify_photo(
         PhotoVerificationResponse with validation results
     """
     try:
-        # Read file content
-        content = await file.read()
+        # Ensure either file or URL is provided
+        if not file and not image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'file' or 'image_url' must be provided"
+            )
+        
+        if file and image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'file' or 'image_url', not both"
+            )
+        
+        # Get image content
+        if image_url:
+            # Download from URL
+            content = await download_image_from_url(image_url)
+            content_type = "image/jpeg"  # Will be validated by image_format check
+        else:
+            # Read file content
+            content = await file.read()
+            content_type = file.content_type
         
         # Validate file size
         file_size = get_file_size(content)
@@ -72,11 +95,11 @@ async def verify_photo(
                 detail=f"Invalid image format. Supported formats: {', '.join(settings.allowed_image_types)}"
             )
         
-        # Validate content type
-        if file.content_type not in settings.allowed_image_types:
+        # Validate content type (skip for URLs since we verified format)
+        if file and content_type not in settings.allowed_image_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid content type: {file.content_type}. Allowed types: {', '.join(settings.allowed_image_types)}"
+                detail=f"Invalid content type: {content_type}. Allowed types: {', '.join(settings.allowed_image_types)}"
             )
         
         # Load image

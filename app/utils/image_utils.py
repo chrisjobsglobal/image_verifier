@@ -5,6 +5,48 @@ from typing import Tuple, Optional
 import cv2
 import numpy as np
 from PIL import Image
+import httpx
+
+
+async def download_image_from_url(url: str, timeout: int = 30) -> bytes:
+    """
+    Download an image from a URL.
+    
+    Args:
+        url: URL of the image to download
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Image bytes
+        
+    Raises:
+        ValueError: If download fails or content is not an image
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            # Check content type
+            content_type = response.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                raise ValueError(f"URL does not point to an image (content-type: {content_type})")
+            
+            # Check file size (max 10MB)
+            content_length = len(response.content)
+            if content_length > 10 * 1024 * 1024:
+                raise ValueError(f"Image too large ({content_length / 1024 / 1024:.1f}MB). Maximum size: 10MB")
+            
+            return response.content
+            
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"Failed to download image: HTTP {e.response.status_code}")
+    except httpx.TimeoutException:
+        raise ValueError(f"Request timeout after {timeout} seconds")
+    except httpx.RequestError as e:
+        raise ValueError(f"Failed to download image: {str(e)}")
+    except Exception as e:
+        raise ValueError(f"Error downloading image: {str(e)}")
 
 
 def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:

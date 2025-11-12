@@ -1,11 +1,16 @@
 """Pydantic request models"""
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class VerificationRequest(BaseModel):
     """Base verification request model"""
+    
+    image_url: Optional[HttpUrl] = Field(
+        default=None,
+        description="URL of the image to verify (alternative to file upload)"
+    )
     
     include_detailed_metrics: bool = Field(
         default=False,
@@ -15,6 +20,7 @@ class VerificationRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "image_url": "https://example.com/photo.jpg",
                 "include_detailed_metrics": False
             }
         }
@@ -36,6 +42,7 @@ class PhotoVerificationRequest(VerificationRequest):
     class Config:
         json_schema_extra = {
             "example": {
+                "image_url": "https://example.com/photo.jpg",
                 "include_detailed_metrics": True,
                 "check_age_requirement": True,
                 "strict_mode": False
@@ -64,6 +71,7 @@ class PassportVerificationRequest(VerificationRequest):
     class Config:
         json_schema_extra = {
             "example": {
+                "image_url": "https://example.com/passport.jpg",
                 "include_detailed_metrics": False,
                 "read_mrz": True,
                 "validate_expiration": True,
