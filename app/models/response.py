@@ -134,6 +134,11 @@ class PassportVerificationResponse(VerificationResponse):
         description="Whether MRZ was successfully detected and read"
     )
     
+    ocr_method: Optional[str] = Field(
+        default=None,
+        description="OCR method used: 'paddleocr' (AI), 'passporteye' (traditional), or 'none'"
+    )
+    
     mrz_data: Optional[MRZData] = Field(
         default=None,
         description="Extracted MRZ data"

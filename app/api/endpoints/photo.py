@@ -13,14 +13,14 @@ from app.core.security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/photo", tags=["Photo Verification"])
+router = APIRouter(tags=["Photo Verification"])
 
 
 @router.post(
-    "/verify",
+    "/verify/upload",
     response_model=PhotoVerificationResponse,
-    summary="Verify Personal Photo",
-    description="Verify a personal photo for ICAO 9303 compliance (accepts file upload or URL)",
+    summary="Verify Personal Photo (File Upload)",
+    description="Verify a personal photo by uploading a file for ICAO 9303 compliance",
     responses={
         200: {"description": "Verification completed successfully"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
@@ -28,15 +28,14 @@ router = APIRouter(prefix="/photo", tags=["Photo Verification"])
         500: {"model": ErrorResponse, "description": "Server error"}
     }
 )
-async def verify_photo(
-    file: Optional[UploadFile] = File(None, description="Photo file to verify (JPEG or PNG)"),
-    image_url: Optional[str] = Form(None, description="URL of the image to verify"),
+async def verify_photo_upload(
+    file: UploadFile = File(..., description="Photo file to verify (JPEG or PNG)"),
     include_detailed_metrics: bool = Form(default=False, description="Include detailed technical metrics"),
     strict_mode: bool = Form(default=False, description="Enable strict compliance mode"),
     api_key: str = Depends(verify_api_key)
 ) -> PhotoVerificationResponse:
     """
-    Verify a personal photo for passport/ID compliance.
+    Verify a personal photo for passport/ID compliance by uploading a file.
     
     This endpoint performs comprehensive validation including:
     - Face detection and positioning
@@ -47,8 +46,7 @@ async def verify_photo(
     - Accessories (glasses) detection
     
     Args:
-        file: Image file (JPEG or PNG) - provide either file or image_url
-        image_url: URL of the image to verify - provide either file or image_url
+        file: Image file (JPEG or PNG) - required
         include_detailed_metrics: Return detailed technical metrics
         strict_mode: Treat warnings as errors
         
@@ -56,28 +54,9 @@ async def verify_photo(
         PhotoVerificationResponse with validation results
     """
     try:
-        # Ensure either file or URL is provided
-        if not file and not image_url:
-            raise HTTPException(
-                status_code=400,
-                detail="Either 'file' or 'image_url' must be provided"
-            )
-        
-        if file and image_url:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide either 'file' or 'image_url', not both"
-            )
-        
-        # Get image content
-        if image_url:
-            # Download from URL
-            content = await download_image_from_url(image_url)
-            content_type = "image/jpeg"  # Will be validated by image_format check
-        else:
-            # Read file content
-            content = await file.read()
-            content_type = file.content_type
+        # Read file content
+        content = await file.read()
+        content_type = file.content_type
         
         # Validate file size
         file_size = get_file_size(content)
@@ -95,8 +74,8 @@ async def verify_photo(
                 detail=f"Invalid image format. Supported formats: {', '.join(settings.allowed_image_types)}"
             )
         
-        # Validate content type (skip for URLs since we verified format)
-        if file and content_type not in settings.allowed_image_types:
+        # Validate content type
+        if content_type not in settings.allowed_image_types:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid content type: {content_type}. Allowed types: {', '.join(settings.allowed_image_types)}"
@@ -111,70 +90,8 @@ async def verify_photo(
                 detail=f"Failed to load image: {str(e)}"
             )
         
-        # Perform ICAO compliance validation
-        validation_results = icao_validator_service.validate_photo_compliance(image)
-        
-        # Build response
-        response = PhotoVerificationResponse(
-            success=True,
-            is_valid=validation_results["is_compliant"],
-            compliance_score=validation_results["compliance_score"],
-            errors=validation_results["errors"],
-            warnings=validation_results["warnings"] if not strict_mode else [],
-            recommendations=_generate_recommendations(validation_results)
-        )
-        
-        # Add warnings as errors in strict mode
-        if strict_mode and validation_results["warnings"]:
-            response.is_valid = False
-            response.errors.extend(validation_results["warnings"])
-        
-        # Add detailed metrics if requested
-        if include_detailed_metrics:
-            # Extract face metrics
-            face_analysis = validation_results["validations"].get("face_analysis", {})
-            if face_analysis.get("face_detected"):
-                face_data = face_analysis.get("metrics", {})
-                response.face_metrics = FaceMetrics(
-                    face_detected=True,
-                    face_percentage=face_data.get("face_percentage"),
-                    is_centered=face_data.get("is_centered"),
-                    center_offset_percentage=face_data.get("center_offset_percentage"),
-                    head_tilt_degrees=face_data.get("head_tilt_degrees"),
-                    eyes_visible=face_data.get("eyes", {}).get("both_eyes_visible"),
-                    eyes_open=not face_data.get("eyes", {}).get("eyes_closed", True),
-                    mouth_closed=not face_data.get("mouth_open", False),
-                    looking_at_camera=face_data.get("gaze", {}).get("looking_at_camera"),
-                    glasses_detected=face_data.get("glasses_detected"),
-                    face_location=face_data.get("face_location")
-                )
-            else:
-                response.face_metrics = FaceMetrics(face_detected=False)
-            
-            # Extract image metrics
-            image_quality = validation_results["validations"].get("image_quality", {})
-            if image_quality:
-                quality_metrics = image_quality.get("metrics", {})
-                response.image_metrics = ImageMetrics(
-                    width=quality_metrics.get("width", 0),
-                    height=quality_metrics.get("height", 0),
-                    resolution=quality_metrics.get("resolution", ""),
-                    blur_score=quality_metrics.get("blur_score"),
-                    brightness=quality_metrics.get("brightness"),
-                    contrast=quality_metrics.get("contrast"),
-                    sharpness=quality_metrics.get("sharpness"),
-                    noise_level=quality_metrics.get("noise_level")
-                )
-            
-            # Add ICAO requirement details
-            response.icao_requirements = validation_results.get("validations", {})
-        
-        logger.info(
-            f"Photo verification completed: valid={response.is_valid}, "
-            f"score={response.compliance_score}, errors={len(response.errors)}"
-        )
-        
-        return response
+        # Process verification
+        return await _process_photo_verification(image, include_detailed_metrics, strict_mode)
     
     except HTTPException:
         raise
@@ -184,6 +101,167 @@ async def verify_photo(
             status_code=500,
             detail=f"Internal server error during photo verification: {str(e)}"
         )
+
+
+@router.post(
+    "/verify/url",
+    response_model=PhotoVerificationResponse,
+    summary="Verify Personal Photo (URL)",
+    description="Verify a personal photo from a URL for ICAO 9303 compliance",
+    responses={
+        200: {"description": "Verification completed successfully"},
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        500: {"model": ErrorResponse, "description": "Server error"}
+    }
+)
+async def verify_photo_url(
+    request: PhotoVerificationRequest = Body(...),
+    api_key: str = Depends(verify_api_key)
+) -> PhotoVerificationResponse:
+    """
+    Verify a personal photo for passport/ID compliance from a URL.
+    
+    This endpoint performs comprehensive validation including:
+    - Face detection and positioning
+    - Image quality assessment (blur, brightness, contrast)
+    - ICAO 9303 compliance checks
+    - Background validation
+    - Lighting and shadow detection
+    - Accessories (glasses) detection
+    
+    Args:
+        request: JSON body with image_url and options
+        
+    Returns:
+        PhotoVerificationResponse with validation results
+    """
+    try:
+        # Download from URL (convert Pydantic HttpUrl to string)
+        content = await download_image_from_url(str(request.image_url))
+        
+        # Validate file size
+        file_size = get_file_size(content)
+        if file_size > settings.max_upload_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size: {settings.max_upload_size / 1024 / 1024:.1f}MB"
+            )
+        
+        # Validate file format
+        is_valid_format, image_format = validate_image_format(content)
+        if not is_valid_format:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image format. Supported formats: {', '.join(settings.allowed_image_types)}"
+            )
+        
+        # Load image
+        try:
+            image = load_image_from_bytes(content)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load image: {str(e)}"
+            )
+        
+        # Process verification
+        return await _process_photo_verification(
+            image, 
+            request.include_detailed_metrics, 
+            request.strict_mode
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Photo verification error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error during photo verification: {str(e)}"
+        )
+
+
+async def _process_photo_verification(
+    image,
+    include_detailed_metrics: bool = False,
+    strict_mode: bool = False
+) -> PhotoVerificationResponse:
+    """
+    Shared processing logic for photo verification.
+    
+    Args:
+        image: Loaded image (numpy array)
+        include_detailed_metrics: Return detailed technical metrics
+        strict_mode: Treat warnings as errors
+        
+    Returns:
+        PhotoVerificationResponse with validation results
+    """
+    # Perform ICAO compliance validation
+    validation_results = icao_validator_service.validate_photo_compliance(image)
+    
+    # Build response
+    response = PhotoVerificationResponse(
+        success=True,
+        is_valid=validation_results["is_compliant"],
+        compliance_score=validation_results["compliance_score"],
+        errors=validation_results["errors"],
+        warnings=validation_results["warnings"] if not strict_mode else [],
+        recommendations=_generate_recommendations(validation_results)
+    )
+    
+    # Add warnings as errors in strict mode
+    if strict_mode and validation_results["warnings"]:
+        response.is_valid = False
+        response.errors.extend(validation_results["warnings"])
+    
+    # Add detailed metrics if requested
+    if include_detailed_metrics:
+        # Extract face metrics
+        face_analysis = validation_results["validations"].get("face_analysis", {})
+        if face_analysis.get("face_detected"):
+            face_data = face_analysis.get("metrics", {})
+            response.face_metrics = FaceMetrics(
+                face_detected=True,
+                face_percentage=face_data.get("face_percentage"),
+                is_centered=face_data.get("is_centered"),
+                center_offset_percentage=face_data.get("center_offset_percentage"),
+                head_tilt_degrees=face_data.get("head_tilt_degrees"),
+                eyes_visible=face_data.get("eyes", {}).get("both_eyes_visible"),
+                eyes_open=not face_data.get("eyes", {}).get("eyes_closed", True),
+                mouth_closed=not face_data.get("mouth_open", False),
+                looking_at_camera=face_data.get("gaze", {}).get("looking_at_camera"),
+                glasses_detected=face_data.get("glasses_detected"),
+                face_location=face_data.get("face_location")
+            )
+        else:
+            response.face_metrics = FaceMetrics(face_detected=False)
+        
+        # Extract image metrics
+        image_quality = validation_results["validations"].get("image_quality", {})
+        if image_quality:
+            quality_metrics = image_quality.get("metrics", {})
+            response.image_metrics = ImageMetrics(
+                width=quality_metrics.get("width", 0),
+                height=quality_metrics.get("height", 0),
+                resolution=quality_metrics.get("resolution", ""),
+                blur_score=quality_metrics.get("blur_score"),
+                brightness=quality_metrics.get("brightness"),
+                contrast=quality_metrics.get("contrast"),
+                sharpness=quality_metrics.get("sharpness"),
+                noise_level=quality_metrics.get("noise_level")
+            )
+        
+        # Add ICAO requirement details
+        response.icao_requirements = validation_results.get("validations", {})
+    
+    logger.info(
+        f"Photo verification completed: valid={response.is_valid}, "
+        f"score={response.compliance_score}, errors={len(response.errors)}"
+    )
+    
+    return response
 
 
 def _generate_recommendations(validation_results: dict) -> list:

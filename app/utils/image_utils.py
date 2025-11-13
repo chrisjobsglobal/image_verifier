@@ -1,26 +1,30 @@
 """Image processing utility functions"""
 
 import io
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import cv2
 import numpy as np
 from PIL import Image
 import httpx
+from pdf2image import convert_from_bytes
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def download_image_from_url(url: str, timeout: int = 30) -> bytes:
     """
-    Download an image from a URL.
+    Download an image or PDF from a URL.
     
     Args:
-        url: URL of the image to download
+        url: URL of the image/PDF to download
         timeout: Request timeout in seconds
         
     Returns:
-        Image bytes
+        File bytes
         
     Raises:
-        ValueError: If download fails or content is not an image
+        ValueError: If download fails or content type not supported
     """
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -29,32 +33,35 @@ async def download_image_from_url(url: str, timeout: int = 30) -> bytes:
             
             # Check content type
             content_type = response.headers.get("content-type", "")
-            if not content_type.startswith("image/"):
-                raise ValueError(f"URL does not point to an image (content-type: {content_type})")
+            
+            # Accept images and PDFs
+            if not (content_type.startswith("image/") or content_type == "application/pdf"):
+                raise ValueError(f"URL does not point to an image or PDF (content-type: {content_type})")
             
             # Check file size (max 10MB)
             content_length = len(response.content)
             if content_length > 10 * 1024 * 1024:
-                raise ValueError(f"Image too large ({content_length / 1024 / 1024:.1f}MB). Maximum size: 10MB")
+                raise ValueError(f"File too large ({content_length / 1024 / 1024:.1f}MB). Maximum size: 10MB")
             
             return response.content
             
     except httpx.HTTPStatusError as e:
-        raise ValueError(f"Failed to download image: HTTP {e.response.status_code}")
+        raise ValueError(f"Failed to download file: HTTP {e.response.status_code}")
     except httpx.TimeoutException:
         raise ValueError(f"Request timeout after {timeout} seconds")
     except httpx.RequestError as e:
-        raise ValueError(f"Failed to download image: {str(e)}")
+        raise ValueError(f"Failed to download file: {str(e)}")
     except Exception as e:
-        raise ValueError(f"Error downloading image: {str(e)}")
+        raise ValueError(f"Error downloading file: {str(e)}")
 
 
 def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
     """
     Load an image from bytes into OpenCV format.
+    Handles both images and PDFs (converts first page).
     
     Args:
-        image_bytes: Image file bytes
+        image_bytes: Image or PDF file bytes
         
     Returns:
         Image as numpy array in BGR format
@@ -63,12 +70,31 @@ def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
         ValueError: If image cannot be loaded
     """
     try:
+        # Check if it's a PDF
+        if image_bytes[:4] == b'%PDF':
+            logger.info("Detected PDF file, converting first page to image")
+            try:
+                # Convert first page of PDF to image
+                images = convert_from_bytes(image_bytes, first_page=1, last_page=1, dpi=300)
+                if not images:
+                    raise ValueError("PDF contains no pages")
+                
+                # Convert PIL Image to OpenCV format
+                pil_image = images[0]
+                return load_image_from_pil(pil_image)
+                
+            except Exception as e:
+                raise ValueError(f"Failed to convert PDF to image: {str(e)}")
+        
+        # Try to decode as regular image
         nparr = np.frombuffer(image_bytes, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Failed to decode image")
         return image
     except Exception as e:
+        if "Failed to convert PDF" in str(e) or "Failed to decode image" in str(e):
+            raise
         raise ValueError(f"Error loading image: {str(e)}")
 
 
@@ -301,7 +327,45 @@ def validate_image_format(image_bytes: bytes) -> Tuple[bool, Optional[str]]:
         Tuple of (is_valid, format_name)
     """
     try:
+        # Check if it's a PDF
+        if image_bytes[:4] == b'%PDF':
+            return True, 'PDF'
+        
         image = Image.open(io.BytesIO(image_bytes))
         return True, image.format
     except Exception:
         return False, None
+
+
+def pdf_to_images(pdf_bytes: bytes, dpi: int = 300) -> List[np.ndarray]:
+    """
+    Convert all pages of a PDF to images.
+    
+    Args:
+        pdf_bytes: PDF file bytes
+        dpi: Resolution for conversion (default 300 for high quality)
+        
+    Returns:
+        List of images as numpy arrays in BGR format
+        
+    Raises:
+        ValueError: If PDF conversion fails
+    """
+    try:
+        # Convert all pages of PDF to images
+        pil_images = convert_from_bytes(pdf_bytes, dpi=dpi)
+        
+        if not pil_images:
+            raise ValueError("PDF contains no pages")
+        
+        # Convert PIL Images to OpenCV format
+        cv_images = []
+        for pil_image in pil_images:
+            cv_image = load_image_from_pil(pil_image)
+            cv_images.append(cv_image)
+        
+        logger.info(f"Converted PDF to {len(cv_images)} images")
+        return cv_images
+        
+    except Exception as e:
+        raise ValueError(f"Failed to convert PDF to images: {str(e)}")

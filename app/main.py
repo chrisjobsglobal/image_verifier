@@ -4,12 +4,14 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
 import sys
+import os
 
 from app.core.config import settings
-from app.api.endpoints import photo, passport
+from app.api.endpoints import photo, passport, debug
 from app.models.response import HealthCheckResponse, ErrorResponse
 
 # Configure logging
@@ -149,8 +151,15 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 # Include routers
-app.include_router(photo.router, prefix=settings.api_prefix)
-app.include_router(passport.router, prefix=settings.api_prefix)
+app.include_router(passport.router, prefix="/api/v1/passport")
+app.include_router(photo.router, prefix="/api/v1/photo")
+app.include_router(debug.router, prefix="/api/v1/debug")
+
+# Mount static files
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    logger.info(f"Static files mounted at /static from {static_dir}")
 
 
 # Root endpoint
@@ -289,7 +298,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=27000,
         reload=settings.debug,
         log_level=settings.log_level.lower()
     )

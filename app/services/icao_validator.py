@@ -3,9 +3,12 @@
 from typing import Dict, List
 import cv2
 import numpy as np
+import logging
 from app.core.config import settings
 from app.services.image_quality import image_quality_service
 from app.services.face_detection import face_detection_service
+
+logger = logging.getLogger(__name__)
 
 
 class ICAOValidatorService:
@@ -292,8 +295,12 @@ class ICAOValidatorService:
         validation = {
             "is_valid": True,
             "errors": [],
-            "warnings": []
+            "warnings": [],
+            "metrics": {}
         }
+        
+        # Check if this is a scanned document
+        is_scan = self._is_scanned_document(image)
         
         # Detect document edges
         document_region = self._detect_document_edges(image)
@@ -310,23 +317,45 @@ class ICAOValidatorService:
         img_area = image.shape[0] * image.shape[1]
         doc_percentage = (doc_area / img_area) * 100
         
-        min_doc_pct = settings.min_document_percentage
-        max_doc_pct = settings.max_document_percentage
+        validation["metrics"]["document_percentage"] = doc_percentage
+        validation["metrics"]["is_scanned_document"] = is_scan
+        
+        # Different thresholds for scanned documents vs photos
+        if is_scan:
+            # Scanned documents should fill 85-100% of frame
+            min_doc_pct = 85.0
+            max_doc_pct = 100.0
+        else:
+            # Photos of documents should be 70-80% with visible margins
+            min_doc_pct = settings.min_document_percentage
+            max_doc_pct = settings.max_document_percentage
         
         if doc_percentage < min_doc_pct or doc_percentage > max_doc_pct:
-            validation["errors"].append(
-                f"Document occupies {doc_percentage:.1f}% of image. "
-                f"Should be between {min_doc_pct}% and {max_doc_pct}%"
-            )
-            validation["is_valid"] = False
+            if is_scan:
+                # For scans, this is unlikely but could happen if severely cropped
+                validation["warnings"].append(
+                    f"Scanned document occupies {doc_percentage:.1f}% of image. "
+                    f"Expected 85-100% for scanned documents"
+                )
+            else:
+                validation["errors"].append(
+                    f"Document occupies {doc_percentage:.1f}% of image. "
+                    f"Should be between {min_doc_pct}% and {max_doc_pct}% for photos"
+                )
+                validation["is_valid"] = False
         
-        # Check document angle/tilt
+        # Check document angle/tilt (less strict for scans)
         angle = self._calculate_document_angle(image, document_region)
+        validation["metrics"]["tilt_angle"] = angle
         
-        if abs(angle) > settings.max_document_tilt_degrees:
+        max_tilt = settings.max_document_tilt_degrees
+        if is_scan:
+            max_tilt = 5.0  # Scans should be very straight
+        
+        if abs(angle) > max_tilt:
             validation["errors"].append(
                 f"Document is tilted {abs(angle):.1f}°. "
-                f"Maximum allowed tilt: {settings.max_document_tilt_degrees}°"
+                f"Maximum allowed tilt: {max_tilt}°"
             )
             validation["is_valid"] = False
         
@@ -354,6 +383,19 @@ class ICAOValidatorService:
     
     def _detect_document_edges(self, image: np.ndarray) -> tuple:
         """Detect document boundaries in image"""
+        height, width = image.shape[:2]
+        
+        # First, check if this looks like a scanned document (fills most of the frame)
+        # by checking if there's minimal background around the edges
+        is_scan = self._is_scanned_document(image)
+        
+        if is_scan:
+            # For scanned documents, the document IS the entire image
+            # Return the full image dimensions with small margin
+            margin = 10
+            return (margin, margin, width - 2*margin, height - 2*margin)
+        
+        # For photos of documents, use edge detection
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # Apply Canny edge detection
@@ -363,7 +405,8 @@ class ICAOValidatorService:
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
-            return None
+            # No contours found, assume full image is document
+            return (0, 0, width, height)
         
         # Find largest rectangular contour (likely the document)
         largest_area = 0
@@ -380,7 +423,54 @@ class ICAOValidatorService:
                     largest_area = area
                     largest_rect = cv2.boundingRect(contour)
         
+        # If no good rectangle found, assume full image
+        if largest_rect is None:
+            return (0, 0, width, height)
+        
         return largest_rect
+    
+    def _is_scanned_document(self, image: np.ndarray) -> bool:
+        """
+        Detect if image is a scanned document (fills frame) vs photo of document (with background).
+        
+        Args:
+            image: Input image
+            
+        Returns:
+            True if appears to be a scan, False if photo with background
+        """
+        height, width = image.shape[:2]
+        
+        # Sample border regions (top, bottom, left, right edges)
+        border_width = max(10, min(width, height) // 20)  # 5% of smallest dimension
+        
+        top_border = image[:border_width, :]
+        bottom_border = image[-border_width:, :]
+        left_border = image[:, :border_width]
+        right_border = image[:, -border_width:]
+        
+        # Calculate standard deviation of each border
+        # Low std dev suggests uniform background (photo)
+        # High std dev suggests content (scan)
+        top_std = np.std(cv2.cvtColor(top_border, cv2.COLOR_BGR2GRAY))
+        bottom_std = np.std(cv2.cvtColor(bottom_border, cv2.COLOR_BGR2GRAY))
+        left_std = np.std(cv2.cvtColor(left_border, cv2.COLOR_BGR2GRAY))
+        right_std = np.std(cv2.cvtColor(right_border, cv2.COLOR_BGR2GRAY))
+        
+        avg_border_std = (top_std + bottom_std + left_std + right_std) / 4
+        
+        logger.info(f"Border analysis - avg_std: {avg_border_std:.2f}, threshold: 15")
+        
+        # CORRECTED LOGIC:
+        # Low std dev (<15) = uniform borders (white margins from PDF/scan) = SCANNED DOCUMENT
+        # High std dev (>15) = content/background variation = PHOTO WITH BACKGROUND
+        # 
+        # PDFs converted to images have white margins with std dev ~0
+        # Photos of documents on tables/backgrounds have variation in borders
+        is_scan = avg_border_std < 15
+        logger.info(f"Document type detected: {'SCAN' if is_scan else 'PHOTO'}")
+        
+        return is_scan
     
     def _calculate_document_angle(self, image: np.ndarray, document_region: tuple) -> float:
         """Calculate document tilt angle"""
