@@ -190,19 +190,40 @@ class FaceDetectionService:
     def calculate_face_percentage(self, image: np.ndarray, 
                                   face_location: Tuple[int, int, int, int]) -> float:
         """
-        Calculate what percentage of the image the face occupies.
+        Calculate what percentage of the image the head occupies.
+        
+        Per ICAO 9303 standards, measurement should be from top of head to top of shoulders,
+        not just the face detection box (which typically goes from forehead to chin).
+        
+        Face detection libraries typically detect the face area (forehead to chin), but ICAO
+        requires "head and top of shoulders" which is typically 1.3-1.5x the face height.
+        
+        We extend the detected face box to approximate the full head + shoulders measurement:
+        - Add 30% above (to include hair/top of head)
+        - Add 20% below (to include chin to shoulder area)
         
         Args:
             image: Image as numpy array
             face_location: Face bounding box (top, right, bottom, left)
             
         Returns:
-            Percentage of image occupied by face
+            Percentage of image height occupied by head + shoulders
         """
         top, right, bottom, left = face_location
-        face_area = (bottom - top) * (right - left)
-        image_area = image.shape[0] * image.shape[1]
-        percentage = (face_area / image_area) * 100
+        face_height = bottom - top
+        
+        # ICAO measures "head and top of shoulders", not just face detection box
+        # Face detection typically captures forehead to chin
+        # We need to account for:
+        # - Hair/top of head (add ~30% above detected face)
+        # - Chin to shoulders (add ~20% below detected face)
+        head_and_shoulders_height = face_height * 1.5  # 1.0 + 0.3 + 0.2
+        
+        image_height = image.shape[0]
+        
+        # Calculate head+shoulders height as percentage of image height (ICAO standard)
+        percentage = (head_and_shoulders_height / image_height) * 100
+        
         return percentage
     
     def check_face_centering(self, image: np.ndarray, 

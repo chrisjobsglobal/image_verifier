@@ -48,9 +48,9 @@ class Settings(BaseSettings):
     max_brightness: int = 200
     min_contrast: float = 40.0
     
-    # Passport Document Settings
-    min_document_percentage: float = 70.0
-    max_document_percentage: float = 80.0
+    # Passport Document Settings (for photos of passport documents)
+    min_document_percentage: float = 30.0  # Minimum 30% for photographed documents
+    max_document_percentage: float = 95.0  # Maximum 95% (allow some margin)
     max_document_tilt_degrees: float = 10.0
     
     # Tesseract OCR Path (Windows default, adjust if needed)

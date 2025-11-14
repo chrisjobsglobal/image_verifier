@@ -15,12 +15,13 @@ class ImageQualityService:
         self.max_brightness = settings.max_brightness
         self.min_contrast = settings.min_contrast
     
-    def assess_quality(self, image: np.ndarray) -> Dict:
+    def assess_quality(self, image: np.ndarray, is_scan: bool = False) -> Dict:
         """
         Perform comprehensive image quality assessment.
         
         Args:
             image: Image as numpy array in BGR format
+            is_scan: Whether this is a scanned document (different thresholds)
             
         Returns:
             Dictionary with quality assessment results
@@ -42,8 +43,8 @@ class ImageQualityService:
                 f"Image is blurry (score: {blur_score:.2f}, threshold: {self.blur_threshold})"
             )
         
-        # Check brightness
-        brightness, brightness_status = self.check_brightness(image)
+        # Check brightness (different thresholds for scans vs photos)
+        brightness, brightness_status = self.check_brightness(image, is_scan=is_scan)
         results["metrics"]["brightness"] = brightness
         results["metrics"]["brightness_status"] = brightness_status
         if brightness_status != "good":
@@ -86,7 +87,7 @@ class ImageQualityService:
         # Check sharpness
         sharpness = self.calculate_sharpness(image)
         results["metrics"]["sharpness"] = sharpness
-        if sharpness < 50.0:  # Low sharpness threshold
+        if sharpness < 5.0:  # Very low sharpness threshold (adjusted for real-world photos)
             results["warnings"].append(
                 f"Image sharpness is low ({sharpness:.2f})"
             )
@@ -109,12 +110,13 @@ class ImageQualityService:
         is_blurry = laplacian_var < self.blur_threshold
         return laplacian_var, is_blurry
     
-    def check_brightness(self, image: np.ndarray) -> Tuple[float, str]:
+    def check_brightness(self, image: np.ndarray, is_scan: bool = False) -> Tuple[float, str]:
         """
         Check image brightness level.
         
         Args:
             image: Image as numpy array
+            is_scan: Whether this is a scanned document (uses higher brightness threshold)
             
         Returns:
             Tuple of (brightness_value, status)
@@ -127,9 +129,20 @@ class ImageQualityService:
         # Calculate mean brightness
         brightness = np.mean(l_channel)
         
-        if brightness < self.min_brightness:
+        # Scans typically have higher brightness due to white backgrounds
+        # Use different thresholds for scans vs photos
+        if is_scan:
+            # For scanned documents: allow brighter images (200-255 is normal)
+            min_bright = 150.0  # Can be darker than photos
+            max_bright = 255.0  # Allow full white backgrounds
+        else:
+            # For camera photos: use standard thresholds
+            min_bright = self.min_brightness
+            max_bright = self.max_brightness
+        
+        if brightness < min_bright:
             status = "too_dark"
-        elif brightness > self.max_brightness:
+        elif brightness > max_bright:
             status = "too_bright"
         else:
             status = "good"
@@ -223,12 +236,16 @@ class ImageQualityService:
         
         return has_shadows, shadow_percentage
     
-    def detect_flash_reflection(self, image: np.ndarray) -> Tuple[bool, List[Tuple[int, int, int, int]]]:
+    def detect_flash_reflection(self, image: np.ndarray, face_region: Tuple[int, int, int, int] = None) -> Tuple[bool, List[Tuple[int, int, int, int]]]:
         """
         Detect bright flash reflections in image.
         
+        Flash reflections are large, very bright spots (usually on glasses, forehead, or background).
+        Normal skin highlights and plain white backgrounds should be ignored.
+        
         Args:
             image: Image as numpy array
+            face_region: Optional (top, right, bottom, left) to focus detection on face area
             
         Returns:
             Tuple of (has_reflection, reflection_regions)
@@ -238,19 +255,35 @@ class ImageQualityService:
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l_channel = lab[:, :, 0]
         
-        # Threshold for very bright regions
-        _, bright_regions = cv2.threshold(l_channel, 220, 255, cv2.THRESH_BINARY)
+        # Threshold for very bright regions (increased from 220 to 245 to ignore normal skin highlights and light backgrounds)
+        _, bright_regions = cv2.threshold(l_channel, 245, 255, cv2.THRESH_BINARY)
         
         # Find contours of bright regions
         contours, _ = cv2.findContours(bright_regions, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
+        image_height, image_width = image.shape[:2]
+        
         reflection_regions = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            # Only consider significant bright spots
-            if area > 100:  # Minimum area threshold
+            # Only consider significant bright spots (1000+ pixels for real flash reflections)
+            # Real flash reflections are typically larger areas (glasses glare, shiny surfaces, background washout)
+            # Normal skin highlights and small specular reflections should be ignored
+            if area > 1000:
                 x, y, w, h = cv2.boundingRect(contour)
-                reflection_regions.append((x, y, w, h))
+                
+                # Ignore regions that are along the edges (likely background, not flash)
+                # Flash reflections typically appear on face/glasses, not in margins
+                edge_margin = 50  # pixels from edge
+                is_edge_region = (x < edge_margin or y < edge_margin or 
+                                 x + w > image_width - edge_margin or 
+                                 y + h > image_height - edge_margin)
+                
+                # Ignore very large regions that cover > 30% of image (likely white background)
+                is_very_large = area > (image_width * image_height * 0.3)
+                
+                if not is_edge_region and not is_very_large:
+                    reflection_regions.append((x, y, w, h))
         
         has_reflection = len(reflection_regions) > 0
         

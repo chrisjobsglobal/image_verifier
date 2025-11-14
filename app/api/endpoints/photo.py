@@ -3,6 +3,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Body
 from typing import Optional
 import logging
+import numpy as np
 
 from app.models.request import PhotoVerificationRequest
 from app.models.response import PhotoVerificationResponse, ErrorResponse, FaceMetrics, ImageMetrics
@@ -14,6 +15,21 @@ from app.core.security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Photo Verification"])
+
+
+def convert_numpy_types(obj):
+    """Convert numpy types to Python native types for JSON serialization"""
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, (np.integer, np.int_)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float_)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numpy_types(item) for item in obj]
+    return obj
 
 
 @router.post(
@@ -222,16 +238,21 @@ async def _process_photo_verification(
         face_analysis = validation_results["validations"].get("face_analysis", {})
         if face_analysis.get("face_detected"):
             face_data = face_analysis.get("metrics", {})
+            # Convert all numpy types to Python types
+            face_data = convert_numpy_types(face_data)
+            eyes_data = face_data.get("eyes", {})
+            gaze_data = face_data.get("gaze", {})
+            
             response.face_metrics = FaceMetrics(
                 face_detected=True,
                 face_percentage=face_data.get("face_percentage"),
                 is_centered=face_data.get("is_centered"),
                 center_offset_percentage=face_data.get("center_offset_percentage"),
                 head_tilt_degrees=face_data.get("head_tilt_degrees"),
-                eyes_visible=face_data.get("eyes", {}).get("both_eyes_visible"),
-                eyes_open=not face_data.get("eyes", {}).get("eyes_closed", True),
+                eyes_visible=eyes_data.get("both_eyes_visible"),
+                eyes_open=not eyes_data.get("eyes_closed", True),
                 mouth_closed=not face_data.get("mouth_open", False),
-                looking_at_camera=face_data.get("gaze", {}).get("looking_at_camera"),
+                looking_at_camera=gaze_data.get("looking_at_camera"),
                 glasses_detected=face_data.get("glasses_detected"),
                 face_location=face_data.get("face_location")
             )
@@ -241,7 +262,7 @@ async def _process_photo_verification(
         # Extract image metrics
         image_quality = validation_results["validations"].get("image_quality", {})
         if image_quality:
-            quality_metrics = image_quality.get("metrics", {})
+            quality_metrics = convert_numpy_types(image_quality.get("metrics", {}))
             response.image_metrics = ImageMetrics(
                 width=quality_metrics.get("width", 0),
                 height=quality_metrics.get("height", 0),
@@ -253,8 +274,8 @@ async def _process_photo_verification(
                 noise_level=quality_metrics.get("noise_level")
             )
         
-        # Add ICAO requirement details
-        response.icao_requirements = validation_results.get("validations", {})
+        # Add ICAO requirement details (convert numpy types)
+        response.icao_requirements = convert_numpy_types(validation_results.get("validations", {}))
     
     logger.info(
         f"Photo verification completed: valid={response.is_valid}, "

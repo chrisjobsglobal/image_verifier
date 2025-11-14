@@ -3,6 +3,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Body, Form
 from typing import Optional, Union
 import logging
+import numpy as np
 
 from app.models.request import PassportVerificationRequest
 from app.models.response import PassportVerificationResponse, ErrorResponse, MRZData, ImageMetrics
@@ -15,6 +16,29 @@ from app.core.security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Passport Verification"])
+
+
+def convert_numpy_types(obj):
+    """
+    Recursively convert numpy types to Python native types for JSON serialization.
+    
+    Args:
+        obj: Object that may contain numpy types
+        
+    Returns:
+        Object with numpy types converted to Python types
+    """
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, (np.integer, np.int_)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float_)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numpy_types(item) for item in obj]
+    return obj
 
 
 @router.post(
@@ -265,6 +289,10 @@ async def _process_passport_verification(
         positioning = validation_results["validations"].get("positioning", {})
         quality = validation_results["validations"].get("quality", {})
         
+        # Convert numpy types to Python types
+        positioning = convert_numpy_types(positioning)
+        quality = convert_numpy_types(quality)
+        
         response.document_metrics = {
             "positioning": positioning,
             "quality_checks": quality
@@ -273,6 +301,8 @@ async def _process_passport_verification(
         # Extract image metrics
         if quality:
             quality_metrics = quality.get("metrics", {})
+            quality_metrics = convert_numpy_types(quality_metrics)
+            
             response.image_metrics = ImageMetrics(
                 width=quality_metrics.get("width", 0),
                 height=quality_metrics.get("height", 0),

@@ -359,29 +359,42 @@ class EnhancedMRZReaderService:
         if not name:
             return ""
         
-        # Remove common OCR artifacts - be more aggressive
+        # Remove common OCR artifacts
         import re
         
-        # First pass: Common character replacements
+        # First: Fix common OCR misreads where << is read as KK (exactly 2 K's)
+        # Only replace KK, not single K which might be valid
+        name = name.replace('KK', '<<')
+        
+        # Common character replacements for OCR errors
         cleaned = name.replace('0', 'O').replace('1', 'I').replace('5', 'S').replace('8', 'B')
         
         # Remove any remaining digits (names shouldn't have numbers)
         cleaned = ''.join(c for c in cleaned if not c.isdigit())
         
-        # Remove repeated characters that look like OCR errors (KKK, SSS, etc.)
-        # Replace 3+ repeated chars with single char
-        cleaned = re.sub(r'(.)\1{2,}', r'\1', cleaned)
+        # Remove 3+ repeated characters that look like OCR errors (SSS→S, etc.)
+        # But preserve < which is valid MRZ separator
+        # This converts "KKKKK" to "K" but we already converted "KK" to "<<" above
+        cleaned = re.sub(r'([^<])\1{2,}', r'\1', cleaned)
         
-        # Split by common separators and filter out junk
+        # Split by MRZ separators and whitespace
         parts = re.split(r'[<\s]+', cleaned)
         valid_parts = []
         
         for part in parts:
-            # Keep parts that are at least 2 chars and mostly letters
-            if len(part) >= 2:
-                letter_ratio = sum(1 for c in part if c.isalpha()) / len(part)
-                if letter_ratio > 0.7:  # At least 70% letters
-                    valid_parts.append(part)
+            # Keep parts that are:
+            # - At least 1 char (changed from 2 to preserve single letters)
+            # - Mostly letters (at least 70%)
+            if len(part) >= 1:
+                if len(part) == 1:
+                    # Single letters are OK if they're actually letters
+                    if part.isalpha():
+                        valid_parts.append(part)
+                else:
+                    # Multi-char parts need 70% letters
+                    letter_ratio = sum(1 for c in part if c.isalpha()) / len(part)
+                    if letter_ratio > 0.7:
+                        valid_parts.append(part)
         
         return ' '.join(valid_parts).strip()
     

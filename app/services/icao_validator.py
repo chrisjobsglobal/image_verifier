@@ -113,6 +113,10 @@ class ICAOValidatorService:
             "validations": {}
         }
         
+        # Detect if this is a scanned document vs camera photo
+        is_scan = self._is_scanned_document(image)
+        results["document_type"] = "SCAN" if is_scan else "PHOTO"
+        
         # 1. Document Positioning Validation
         positioning = self._validate_document_positioning(image)
         results["validations"]["positioning"] = positioning
@@ -121,16 +125,16 @@ class ICAOValidatorService:
             results["is_compliant"] = False
             results["errors"].extend(positioning["errors"])
         
-        # 2. Document Quality Validation
-        quality = self.image_quality_service.assess_quality(image)
+        # 2. Document Quality Validation (different thresholds for scans)
+        quality = self.image_quality_service.assess_quality(image, is_scan=is_scan)
         results["validations"]["quality"] = quality
         
         if not quality["is_valid"]:
             results["is_compliant"] = False
             results["errors"].extend(quality["errors"])
         
-        # 3. Lighting and Reflections
-        lighting = self._validate_document_lighting(image)
+        # 3. Lighting and Reflections (skip glare detection for scans)
+        lighting = self._validate_document_lighting(image, is_scan=is_scan)
         results["validations"]["lighting"] = lighting
         
         if not lighting["is_valid"]:
@@ -326,7 +330,8 @@ class ICAOValidatorService:
             min_doc_pct = 85.0
             max_doc_pct = 100.0
         else:
-            # Photos of documents should be 70-80% with visible margins
+            # Photos of documents should be 30-95% with visible margins
+            # (more lenient than personal ID photos which need 70-80% face coverage)
             min_doc_pct = settings.min_document_percentage
             max_doc_pct = settings.max_document_percentage
         
@@ -339,29 +344,42 @@ class ICAOValidatorService:
                 )
             else:
                 validation["errors"].append(
-                    f"Document occupies {doc_percentage:.1f}% of image. "
-                    f"Should be between {min_doc_pct}% and {max_doc_pct}% for photos"
+                    f"Passport document occupies {doc_percentage:.1f}% of image. "
+                    f"Should be between {min_doc_pct}% and {max_doc_pct}% "
+                    f"(document should be clearly visible with margins)"
                 )
                 validation["is_valid"] = False
         
-        # Check document angle/tilt (less strict for scans)
+        # Check document angle/tilt (more lenient for scans, strict for photos)
         angle = self._calculate_document_angle(image, document_region)
         validation["metrics"]["tilt_angle"] = angle
         
-        max_tilt = settings.max_document_tilt_degrees
+        # Different tilt thresholds:
+        # - Scans: More lenient (warn at 5°, error at 15°) since rotation can be corrected
+        # - Photos: Strict (warn at 3°, error at 10°) since it indicates camera handling issues
         if is_scan:
-            max_tilt = 5.0  # Scans should be very straight
+            warn_tilt = 5.0
+            max_tilt = 15.0
+        else:
+            warn_tilt = 3.0
+            max_tilt = settings.max_document_tilt_degrees
         
         if abs(angle) > max_tilt:
             validation["errors"].append(
                 f"Document is tilted {abs(angle):.1f}°. "
-                f"Maximum allowed tilt: {max_tilt}°"
+                f"Maximum allowed tilt: {max_tilt}° for {'scans' if is_scan else 'photos'}. "
+                f"Consider rotating the document before uploading."
             )
             validation["is_valid"] = False
+        elif abs(angle) > warn_tilt:
+            validation["warnings"].append(
+                f"Document is tilted {abs(angle):.1f}°. "
+                f"For best results, rotate the document to be perfectly aligned."
+            )
         
         return validation
     
-    def _validate_document_lighting(self, image: np.ndarray) -> Dict:
+    def _validate_document_lighting(self, image: np.ndarray, is_scan: bool = False) -> Dict:
         """Validate passport document lighting"""
         validation = {
             "is_valid": True,
@@ -369,24 +387,29 @@ class ICAOValidatorService:
             "warnings": []
         }
         
-        # Check for reflections/glare
-        has_reflection, _ = self.image_quality_service.detect_flash_reflection(image)
-        
-        if has_reflection:
-            validation["errors"].append(
-                "Glare or reflections detected on document. "
-                "Do not use flash and avoid reflective surfaces"
-            )
-            validation["is_valid"] = False
+        # Skip glare detection for scanned documents (uniform lighting is expected)
+        if not is_scan:
+            # Check for reflections/glare (only for camera photos)
+            has_reflection, _ = self.image_quality_service.detect_flash_reflection(image)
+            
+            if has_reflection:
+                # For passport documents, reflections are often from security features
+                # (holograms, lamination), not just flash - make it a warning, not error
+                validation["warnings"].append(
+                    "Reflections detected on document. This may be from security features (holograms/lamination) "
+                    "or camera flash. If using camera, avoid flash and position document to minimize glare"
+                )
         
         return validation
     
     def _detect_document_edges(self, image: np.ndarray) -> tuple:
-        """Detect document boundaries in image"""
+        """
+        Detect document boundaries in image by finding the dominant rectangular region.
+        Uses edge detection on border strips to find document edges.
+        """
         height, width = image.shape[:2]
         
         # First, check if this looks like a scanned document (fills most of the frame)
-        # by checking if there's minimal background around the edges
         is_scan = self._is_scanned_document(image)
         
         if is_scan:
@@ -395,39 +418,48 @@ class ICAOValidatorService:
             margin = 10
             return (margin, margin, width - 2*margin, height - 2*margin)
         
-        # For photos of documents, use edge detection
+        # For photos of documents, find the document edges
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Apply Canny edge detection
-        edges = cv2.Canny(gray, 50, 150)
+        # Apply bilateral filter to reduce noise while preserving edges
+        filtered = cv2.bilateralFilter(gray, 9, 75, 75)
+        
+        # Apply adaptive thresholding to handle varying lighting
+        thresh = cv2.adaptiveThreshold(
+            filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
         
         # Find contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
             # No contours found, assume full image is document
+            logger.warning("No contours found in document detection")
             return (0, 0, width, height)
         
-        # Find largest rectangular contour (likely the document)
-        largest_area = 0
-        largest_rect = None
+        # Find the largest contour by area
+        largest_contour = max(contours, key=cv2.contourArea)
+        largest_area = cv2.contourArea(largest_contour)
         
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > largest_area:
-                peri = cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-                
-                # Check if contour has 4 corners (rectangle)
-                if len(approx) == 4:
-                    largest_area = area
-                    largest_rect = cv2.boundingRect(contour)
-        
-        # If no good rectangle found, assume full image
-        if largest_rect is None:
+        # If largest contour is too small (< 10% of image), assume full image
+        min_area = (width * height) * 0.1
+        if largest_area < min_area:
+            logger.warning(f"Largest contour too small: {largest_area} < {min_area}")
             return (0, 0, width, height)
         
-        return largest_rect
+        # Get bounding rectangle of the largest contour
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        
+        # Validate the bounding rectangle makes sense
+        # Document should be at least 20% of image in each dimension
+        if w < width * 0.2 or h < height * 0.2:
+            logger.warning(f"Detected document too small: {w}x{h} in {width}x{height} image")
+            return (0, 0, width, height)
+        
+        logger.info(f"Document detected at ({x}, {y}, {w}, {h}) - {w}x{h} in {width}x{height} image")
+        
+        return (x, y, w, h)
     
     def _is_scanned_document(self, image: np.ndarray) -> bool:
         """
@@ -473,32 +505,82 @@ class ICAOValidatorService:
         return is_scan
     
     def _calculate_document_angle(self, image: np.ndarray, document_region: tuple) -> float:
-        """Calculate document tilt angle"""
+        """
+        Calculate document tilt angle by analyzing ONLY the outermost border pixels.
+        This avoids false positives from internal content like flags, photos, or MRZ text.
+        We sample only the very edge pixels of the document to determine rotation.
+        """
         x, y, w, h = document_region
         
         # Extract document region
         doc_img = image[y:y+h, x:x+w]
         gray = cv2.cvtColor(doc_img, cv2.COLOR_BGR2GRAY)
         
-        # Detect lines using Hough transform
-        edges = cv2.Canny(gray, 50, 150)
-        lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
+        # Define how many pixels from the edge to sample (very thin border strip)
+        border_width = 5  # Only analyze the outermost 5 pixels
         
-        if lines is None:
+        # Extract ONLY the border strips (top, bottom, left, right edges)
+        top_strip = gray[:border_width, :]
+        bottom_strip = gray[-border_width:, :]
+        left_strip = gray[:, :border_width]
+        right_strip = gray[:, -border_width:]
+        
+        # Detect edges in each border strip
+        all_angles = []
+        
+        # Top and bottom borders (horizontal edges)
+        for strip in [top_strip, bottom_strip]:
+            edges = cv2.Canny(strip, 50, 150)
+            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=20,
+                                   minLineLength=50, maxLineGap=10)
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    # For horizontal edges, we expect angles near 0° or 180°
+                    angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    all_angles.append(angle)
+        
+        # Left and right borders (vertical edges)
+        for strip in [left_strip, right_strip]:
+            edges = cv2.Canny(strip, 50, 150)
+            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=20,
+                                   minLineLength=50, maxLineGap=10)
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    # For vertical edges, convert to rotation angle
+                    angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    # Vertical lines should be 90° or -90°, adjust to 0-based rotation
+                    if abs(angle - 90) < 45 or abs(angle + 90) < 45:
+                        # This is a vertical edge, convert to rotation
+                        if angle > 0:
+                            rotation = angle - 90
+                        else:
+                            rotation = angle + 90
+                        all_angles.append(rotation)
+        
+        if not all_angles:
             return 0.0
         
-        # Calculate average angle of detected lines
-        angles = []
-        for line in lines[:10]:  # Use first 10 lines
-            rho, theta = line[0]
-            angle = np.degrees(theta) - 90
-            angles.append(angle)
+        # Normalize all angles to -90 to 90 range
+        normalized_angles = []
+        for angle in all_angles:
+            while angle > 90:
+                angle -= 180
+            while angle < -90:
+                angle += 180
+            # Filter out extreme outliers (likely noise)
+            if abs(angle) < 60:  # Only keep reasonable tilt angles
+                normalized_angles.append(angle)
         
-        if angles:
-            avg_angle = np.median(angles)
-            return avg_angle
+        if not normalized_angles:
+            return 0.0
         
-        return 0.0
+        # Use median to be robust against outliers
+        median_angle = np.median(normalized_angles)
+        
+        # Round to nearest 0.5 degrees
+        return round(median_angle * 2) / 2
     
     def _is_color_photo(self, image: np.ndarray) -> bool:
         """Check if image is in color"""
