@@ -257,6 +257,52 @@ async def _process_passport_verification(
         
         if mrz_results["mrz_found"]:
             mrz_data = mrz_results["mrz_data"]
+            mrz_confidence = mrz_results.get("confidence", 0.0)
+            
+            # Validate MRZ confidence threshold
+            if mrz_confidence < settings.min_mrz_confidence:
+                response.is_valid = False
+                response.errors.append(
+                    f"MRZ confidence too low ({mrz_confidence:.1f}%). "
+                    f"Minimum required: {settings.min_mrz_confidence:.1f}%"
+                )
+                logger.warning(f"MRZ confidence below threshold: {mrz_confidence:.1f}%")
+            
+            # Validate required MRZ fields
+            field_labels = {
+                "surname": "Surname",
+                "given_names": "Given names",
+                "passport_number": "Passport number",
+                "country": "Issuing country",
+                "nationality": "Nationality",
+                "date_of_birth": "Date of birth",
+                "sex": "Sex",
+                "expiry_date": "Expiration date"
+            }
+            
+            for field in settings.mrz_required_fields:
+                # Map field names (config uses simplified names)
+                mrz_field = field
+                if field == "names":
+                    mrz_field = "given_names"
+                elif field == "expiration_date":
+                    mrz_field = "expiry_date"
+                
+                field_value = mrz_data.get(mrz_field)
+                
+                # Check if field is missing, empty, or contains only placeholder characters
+                is_missing = (
+                    not field_value or 
+                    field_value == "" or 
+                    field_value.replace("<", "").strip() == ""
+                )
+                
+                if is_missing:
+                    response.is_valid = False
+                    label = field_labels.get(mrz_field, mrz_field.replace("_", " ").title())
+                    response.errors.append(f"Missing required field: {label}")
+                    logger.warning(f"Required MRZ field missing: {mrz_field}")
+            
             response.mrz_data = MRZData(
                 type=mrz_data.get("document_type"),
                 country=mrz_data.get("country"),
@@ -542,4 +588,238 @@ async def extract_mrz_url(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error during MRZ extraction: {str(e)}"
+        )
+
+
+@router.post(
+    "/extract-text/upload",
+    response_model=dict,
+    summary="Extract Text from Passport Pages (File Upload)",
+    description="Extract all text from passport pages (single/multi-page PDF or image). Returns OCR text from all pages.",
+    responses={
+        200: {"description": "Text extraction completed successfully"},
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        500: {"model": ErrorResponse, "description": "Server error"}
+    }
+)
+async def extract_passport_text_upload(
+    file: UploadFile = File(..., description="Passport document file (JPEG, PNG, or multi-page PDF)"),
+    include_detailed_blocks: bool = Form(default=False, description="Include detailed text blocks with coordinates"),
+    max_pages: int = Form(default=10, description="Maximum number of pages to process from PDF (default 10)"),
+    api_key: str = Depends(verify_api_key)
+) -> dict:
+    """
+    Extract all text from passport pages using OCR.
+    
+    This endpoint extracts readable text from passport documents (not just MRZ):
+    - Supports single images (JPEG, PNG) - treated as page 1
+    - Supports multi-page PDFs - all pages will be processed
+    - Uses EasyOCR for text detection and recognition
+    - Returns text organized by page number
+    - Optionally includes text block positions and confidence scores
+    
+    Use cases:
+    - Extract all visible text from passport bio page
+    - Read visa stamps and endorsements
+    - Extract text from observation pages
+    - Parse multi-page passport documents
+    
+    Args:
+        file: Passport document file (required)
+        include_detailed_blocks: Include text block coordinates and confidence
+        
+    Returns:
+        Dictionary with extracted text from all pages
+    """
+    try:
+        from app.services.text_extractor import text_extraction_service
+        
+        # Read file content
+        content = await file.read()
+        
+        # Validate file size
+        file_size = get_file_size(content)
+        if file_size > settings.max_upload_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size: {settings.max_upload_size / 1024 / 1024:.1f}MB"
+            )
+        
+        # Validate file format
+        is_valid_format, image_format = validate_image_format(content)
+        if not is_valid_format:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file format. Supported: JPEG, PNG, PDF. Detected: {image_format}"
+            )
+        
+        logger.info(f"Processing {image_format} file for text extraction (size: {file_size / 1024:.1f}KB)")
+        
+        # Load image(s) from file
+        from app.utils.image_utils import load_images_from_bytes
+        images = load_images_from_bytes(content, max_pages=max_pages)
+        
+        if not images or len(images) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to load image from file"
+            )
+        
+        logger.info(f"Loaded {len(images)} page(s) from file")
+        
+        # Extract text from all pages
+        result = text_extraction_service.extract_text_from_pages(
+            images,
+            include_detailed_blocks=include_detailed_blocks
+        )
+        
+        # Build response
+        response = {
+            "success": result["success"],
+            "is_valid": result["success"],
+            "total_pages": result["total_pages"],
+            "pages": result["pages"],
+            "combined_text": result["combined_text"],
+            "ocr_method": result["ocr_method"],
+            "processing_time_seconds": result["processing_time_seconds"],
+            "errors": result["errors"],
+            "warnings": result["warnings"]
+        }
+        
+        # Convert numpy types if any
+        response = convert_numpy_types(response)
+        
+        logger.info(f"Text extraction completed: {len(result['pages'])} pages, "
+                   f"{len(result['combined_text'])} characters total")
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Text extraction error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error during text extraction: {str(e)}"
+        )
+
+
+@router.post(
+    "/extract-text/url",
+    response_model=dict,
+    summary="Extract Text from Passport Pages (URL)",
+    description="Extract all text from passport pages by providing an image/PDF URL",
+    responses={
+        200: {"description": "Text extraction completed successfully"},
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        500: {"model": ErrorResponse, "description": "Server error"}
+    }
+)
+async def extract_passport_text_url(
+    request: dict = Body(..., example={
+        "image_url": "https://example.com/passport.pdf",
+        "include_detailed_blocks": False,
+        "max_pages": 10
+    }),
+    api_key: str = Depends(verify_api_key)
+) -> dict:
+    """
+    Extract all text from passport pages by providing a URL.
+    
+    This endpoint downloads and processes the document from a URL:
+    - Supports single images (JPEG, PNG) - treated as page 1
+    - Supports multi-page PDFs - processes up to max_pages (default 10)
+    - Uses EasyOCR for text detection and recognition
+    - Returns text organized by page number
+    
+    Args:
+        request: JSON body with image_url, optional include_detailed_blocks and max_pages
+        
+    Returns:
+        Dictionary with extracted text from all pages
+    """
+    try:
+        from app.services.text_extractor import text_extraction_service
+        
+        # Extract parameters
+        image_url = request.get("image_url")
+        include_detailed_blocks = request.get("include_detailed_blocks", False)
+        max_pages = request.get("max_pages", 10)
+        
+        if not image_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required field: image_url"
+            )
+        
+        logger.info(f"Downloading document from URL: {image_url}")
+        
+        # Download image
+        content = await download_image_from_url(image_url)
+        
+        # Validate file size
+        file_size = get_file_size(content)
+        if file_size > settings.max_upload_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size: {settings.max_upload_size / 1024 / 1024:.1f}MB"
+            )
+        
+        # Validate file format
+        is_valid_format, image_format = validate_image_format(content)
+        if not is_valid_format:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file format. Supported: JPEG, PNG, PDF. Detected: {image_format}"
+            )
+        
+        logger.info(f"Processing {image_format} file for text extraction (size: {file_size / 1024:.1f}KB)")
+        
+        # Load image(s) from file
+        from app.utils.image_utils import load_images_from_bytes
+        images = load_images_from_bytes(content, max_pages=max_pages)
+        
+        if not images or len(images) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to load image from URL"
+            )
+        
+        logger.info(f"Loaded {len(images)} page(s) from URL")
+        
+        # Extract text from all pages
+        result = text_extraction_service.extract_text_from_pages(
+            images,
+            include_detailed_blocks=include_detailed_blocks
+        )
+        
+        # Build response
+        response = {
+            "success": result["success"],
+            "is_valid": result["success"],
+            "total_pages": result["total_pages"],
+            "pages": result["pages"],
+            "combined_text": result["combined_text"],
+            "ocr_method": result["ocr_method"],
+            "processing_time_seconds": result["processing_time_seconds"],
+            "errors": result["errors"],
+            "warnings": result["warnings"]
+        }
+        
+        # Convert numpy types if any
+        response = convert_numpy_types(response)
+        
+        logger.info(f"Text extraction completed: {len(result['pages'])} pages, "
+                   f"{len(result['combined_text'])} characters total")
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Text extraction error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error during text extraction: {str(e)}"
         )

@@ -11,7 +11,7 @@ import sys
 import os
 
 from app.core.config import settings
-from app.api.endpoints import photo, passport, debug
+from app.api.endpoints import photo, passport, debug, ocr
 from app.models.response import HealthCheckResponse, ErrorResponse
 
 # Configure logging
@@ -153,6 +153,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Include routers
 app.include_router(passport.router, prefix="/api/v1/passport")
 app.include_router(photo.router, prefix="/api/v1/photo")
+app.include_router(ocr.router, prefix="/api/v1")
 app.include_router(debug.router, prefix="/api/v1/debug")
 
 # Mount static files
@@ -179,6 +180,7 @@ async def root():
         "endpoints": {
             "photo_verification": f"{settings.api_prefix}/photo/verify",
             "passport_verification": f"{settings.api_prefix}/passport/verify",
+            "ocr_text_extraction": f"{settings.api_prefix}/ocr/extract-text",
             "health_check": "/health"
         }
     }

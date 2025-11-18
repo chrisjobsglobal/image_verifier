@@ -1,6 +1,7 @@
 """Application Configuration and Settings"""
 
 from typing import Optional
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +53,18 @@ class Settings(BaseSettings):
     min_document_percentage: float = 30.0  # Minimum 30% for photographed documents
     max_document_percentage: float = 95.0  # Maximum 95% (allow some margin)
     max_document_tilt_degrees: float = 10.0
+    
+    # Passport MRZ Validation Settings
+    min_mrz_confidence: float = 65.0  # Minimum MRZ OCR confidence percentage (0-100)
+    mrz_required_fields: str = "surname,names,passport_number,country,nationality,date_of_birth,sex,expiration_date"
+    
+    @field_validator('mrz_required_fields', mode='before')
+    @classmethod
+    def parse_mrz_fields(cls, v):
+        """Parse comma-separated string into list"""
+        if isinstance(v, str):
+            return [field.strip() for field in v.split(',') if field.strip()]
+        return v
     
     # Tesseract OCR Path (Windows default, adjust if needed)
     tesseract_cmd: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"

@@ -337,13 +337,14 @@ def validate_image_format(image_bytes: bytes) -> Tuple[bool, Optional[str]]:
         return False, None
 
 
-def pdf_to_images(pdf_bytes: bytes, dpi: int = 300) -> List[np.ndarray]:
+def pdf_to_images(pdf_bytes: bytes, dpi: int = 300, max_pages: Optional[int] = None) -> List[np.ndarray]:
     """
-    Convert all pages of a PDF to images.
+    Convert pages of a PDF to images.
     
     Args:
         pdf_bytes: PDF file bytes
         dpi: Resolution for conversion (default 300 for high quality)
+        max_pages: Maximum number of pages to convert (default None = all pages)
         
     Returns:
         List of images as numpy arrays in BGR format
@@ -352,20 +353,57 @@ def pdf_to_images(pdf_bytes: bytes, dpi: int = 300) -> List[np.ndarray]:
         ValueError: If PDF conversion fails
     """
     try:
-        # Convert all pages of PDF to images
-        pil_images = convert_from_bytes(pdf_bytes, dpi=dpi)
+        # Convert pages of PDF to images
+        logger.info(f"Converting PDF to images (max_pages: {max_pages})")
+        if max_pages:
+            pil_images = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=1, last_page=max_pages)
+        else:
+            pil_images = convert_from_bytes(pdf_bytes, dpi=dpi)
         
         if not pil_images:
             raise ValueError("PDF contains no pages")
         
+        logger.info(f"pdf2image returned {len(pil_images)} PIL images")
+        
         # Convert PIL Images to OpenCV format
         cv_images = []
-        for pil_image in pil_images:
+        for idx, pil_image in enumerate(pil_images, 1):
+            logger.debug(f"Converting PIL image {idx}/{len(pil_images)} to OpenCV format")
             cv_image = load_image_from_pil(pil_image)
             cv_images.append(cv_image)
         
-        logger.info(f"Converted PDF to {len(cv_images)} images")
+        logger.info(f"Converted PDF to {len(cv_images)} OpenCV images (max_pages: {max_pages or 'unlimited'})")
         return cv_images
         
     except Exception as e:
         raise ValueError(f"Failed to convert PDF to images: {str(e)}")
+
+
+def load_images_from_bytes(image_bytes: bytes, max_pages: Optional[int] = 50) -> List[np.ndarray]:
+    """
+    Load image(s) from bytes - returns list of images.
+    Handles single images (returns as 1-item list) and multi-page PDFs.
+    
+    Args:
+        image_bytes: Image or PDF file bytes
+        max_pages: Maximum number of pages to load from PDF (default 50 for passport docs)
+        
+    Returns:
+        List of images as numpy arrays in BGR format
+        
+    Raises:
+        ValueError: If images cannot be loaded
+    """
+    try:
+        # Check if it's a PDF
+        if image_bytes[:4] == b'%PDF':
+            logger.info(f"Detected PDF file, converting pages to images (max_pages: {max_pages})")
+            return pdf_to_images(image_bytes, dpi=300, max_pages=max_pages)
+        
+        # Single image - load and return as list
+        image = load_image_from_bytes(image_bytes)
+        return [image]
+        
+    except Exception as e:
+        raise ValueError(f"Error loading images: {str(e)}")
+

@@ -213,6 +213,75 @@ class HealthCheckResponse(BaseModel):
         }
 
 
+class PageTextData(BaseModel):
+    """Text data extracted from a single page"""
+    page_number: int = Field(description="Page number (1-indexed)")
+    text: str = Field(description="Extracted text from the page")
+    confidence: Optional[float] = Field(default=None, description="OCR confidence score (0-100)")
+    text_blocks: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Detailed text blocks with coordinates"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "page_number": 1,
+                "text": "PASSPORT\nUnited States of America\nSurname: SMITH\nGiven Names: JOHN DAVID",
+                "confidence": 95.5,
+                "text_blocks": [
+                    {"text": "PASSPORT", "bbox": [100, 50, 200, 80], "confidence": 98.2},
+                    {"text": "United States of America", "bbox": [80, 100, 220, 120], "confidence": 96.5}
+                ]
+            }
+        }
+
+
+class PassportTextExtractionResponse(VerificationResponse):
+    """Response model for passport text extraction"""
+    
+    total_pages: int = Field(description="Total number of pages processed")
+    pages: List[PageTextData] = Field(
+        description="Text data extracted from each page"
+    )
+    combined_text: str = Field(
+        description="All text combined from all pages"
+    )
+    ocr_method: str = Field(
+        description="OCR method used: 'easyocr', 'paddleocr', or 'tesseract'"
+    )
+    processing_time_seconds: Optional[float] = Field(
+        default=None,
+        description="Total processing time in seconds"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "is_valid": True,
+                "total_pages": 2,
+                "errors": [],
+                "warnings": [],
+                "ocr_method": "easyocr",
+                "combined_text": "PASSPORT United States of America...",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "text": "PASSPORT\nUnited States of America",
+                        "confidence": 95.5
+                    },
+                    {
+                        "page_number": 2,
+                        "text": "Visa pages",
+                        "confidence": 92.3
+                    }
+                ],
+                "processing_time_seconds": 3.45
+            }
+        }
+
+
 class ErrorResponse(BaseModel):
     """Error response model"""
     
