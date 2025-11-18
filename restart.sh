@@ -33,7 +33,7 @@ fi
 # Start service
 echo "▶️  Starting service on port $PORT..."
 cd "$SCRIPT_DIR"
-nohup "$VENV_PATH/bin/uvicorn" app.main:app --host 0.0.0.0 --port $PORT --workers 1 > "$LOG_FILE" 2>&1 &
+nohup "$VENV_PATH/bin/uvicorn" app.main:app --host 0.0.0.0 --port $PORT --workers 3 > "$LOG_FILE" 2>&1 &
 
 # Wait for service to start
 sleep 3
