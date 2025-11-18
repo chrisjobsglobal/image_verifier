@@ -32,7 +32,7 @@ def convert_numpy_types(obj):
         return bool(obj)
     elif isinstance(obj, (np.integer, np.int_)):
         return int(obj)
-    elif isinstance(obj, (np.floating, np.float_)):
+    elif isinstance(obj, (np.floating, np.float64)):
         return float(obj)
     elif isinstance(obj, dict):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
