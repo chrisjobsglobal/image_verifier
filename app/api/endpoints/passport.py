@@ -8,7 +8,7 @@ import numpy as np
 from app.models.request import PassportVerificationRequest
 from app.models.response import PassportVerificationResponse, ErrorResponse, MRZData, ImageMetrics
 from app.services.icao_validator import icao_validator_service
-from app.services.mrz_reader_enhanced import enhanced_mrz_reader_service as mrz_reader_service
+from app.services.mrz_reader_easyocr import enhanced_mrz_reader_service as mrz_reader_service
 from app.utils.image_utils import load_image_from_bytes, validate_image_format, get_file_size, download_image_from_url
 from app.core.config import settings
 from app.core.security import verify_api_key
@@ -258,17 +258,17 @@ async def _process_passport_verification(
         if mrz_results["mrz_found"]:
             mrz_data = mrz_results["mrz_data"]
             response.mrz_data = MRZData(
-                type=mrz_data.get("type"),
+                type=mrz_data.get("document_type"),
                 country=mrz_data.get("country"),
                 surname=mrz_data.get("surname"),
-                names=mrz_data.get("names"),
+                names=mrz_data.get("given_names"),
                 passport_number=mrz_data.get("passport_number"),
                 nationality=mrz_data.get("nationality"),
                 date_of_birth=mrz_data.get("date_of_birth"),
                 sex=mrz_data.get("sex"),
-                expiration_date=mrz_data.get("expiration_date"),
+                expiration_date=mrz_data.get("expiry_date"),
                 personal_number=mrz_data.get("personal_number"),
-                raw_mrz_text=mrz_data.get("raw_mrz_text")
+                raw_mrz_text=mrz_data.get("raw_mrz")
             )
             
             # Validate expiration if requested

@@ -33,12 +33,8 @@
    - Parses structured passport data
    - If successful → returns result with `ocr_method: "paddleocr"`
 
-2. **Fallback to PassportEye** (if needed)
-   - Used if PaddleOCR doesn't find MRZ
-   - Traditional Tesseract-based approach
-   - Returns result with `ocr_method: "passporteye"`
 
-3. **Structured Parsing**
+2. **Structured Parsing**
    - Line 1: Document type, country, surname, given names
    - Line 2: Passport number, DOB, sex, expiry, personal number
    - Validates check digits and formats
