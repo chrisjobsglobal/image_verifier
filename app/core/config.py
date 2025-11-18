@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     max_brightness: int = 200
     min_contrast: float = 40.0
     
+    # Flash Reflection Detection Settings
+    flash_brightness_threshold: int = 245  # LAB L-channel threshold (0-255)
+    flash_min_area_pixels: int = 1000  # Minimum area in pixels
+    flash_edge_margin_pixels: int = 50  # Edge margin to ignore
+    flash_max_area_percentage: float = 0.3  # Maximum area as percentage of image
+    
     # Passport Document Settings (for photos of passport documents)
     min_document_percentage: float = 30.0  # Minimum 30% for photographed documents
     max_document_percentage: float = 95.0  # Maximum 95% (allow some margin)

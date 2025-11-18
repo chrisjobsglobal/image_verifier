@@ -14,6 +14,11 @@ class ImageQualityService:
         self.min_brightness = settings.min_brightness
         self.max_brightness = settings.max_brightness
         self.min_contrast = settings.min_contrast
+        # Flash reflection detection settings
+        self.flash_brightness_threshold = settings.flash_brightness_threshold
+        self.flash_min_area_pixels = settings.flash_min_area_pixels
+        self.flash_edge_margin_pixels = settings.flash_edge_margin_pixels
+        self.flash_max_area_percentage = settings.flash_max_area_percentage
     
     def assess_quality(self, image: np.ndarray, is_scan: bool = False) -> Dict:
         """
@@ -255,8 +260,8 @@ class ImageQualityService:
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l_channel = lab[:, :, 0]
         
-        # Threshold for very bright regions (increased from 220 to 245 to ignore normal skin highlights and light backgrounds)
-        _, bright_regions = cv2.threshold(l_channel, 245, 255, cv2.THRESH_BINARY)
+        # Threshold for very bright regions (configurable via settings)
+        _, bright_regions = cv2.threshold(l_channel, self.flash_brightness_threshold, 255, cv2.THRESH_BINARY)
         
         # Find contours of bright regions
         contours, _ = cv2.findContours(bright_regions, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -266,21 +271,21 @@ class ImageQualityService:
         reflection_regions = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            # Only consider significant bright spots (1000+ pixels for real flash reflections)
+            # Only consider significant bright spots (configurable minimum area)
             # Real flash reflections are typically larger areas (glasses glare, shiny surfaces, background washout)
             # Normal skin highlights and small specular reflections should be ignored
-            if area > 1000:
+            if area > self.flash_min_area_pixels:
                 x, y, w, h = cv2.boundingRect(contour)
                 
                 # Ignore regions that are along the edges (likely background, not flash)
                 # Flash reflections typically appear on face/glasses, not in margins
-                edge_margin = 50  # pixels from edge
+                edge_margin = self.flash_edge_margin_pixels
                 is_edge_region = (x < edge_margin or y < edge_margin or 
                                  x + w > image_width - edge_margin or 
                                  y + h > image_height - edge_margin)
                 
-                # Ignore very large regions that cover > 30% of image (likely white background)
-                is_very_large = area > (image_width * image_height * 0.3)
+                # Ignore very large regions that cover > max percentage of image (likely white background)
+                is_very_large = area > (image_width * image_height * self.flash_max_area_percentage)
                 
                 if not is_edge_region and not is_very_large:
                     reflection_regions.append((x, y, w, h))
