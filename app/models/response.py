@@ -136,7 +136,12 @@ class PassportVerificationResponse(VerificationResponse):
     
     ocr_method: Optional[str] = Field(
         default=None,
-        description="OCR method used: 'paddleocr' (AI), 'passporteye' (traditional), or 'none'"
+        description="OCR method used: 'paddleocr' (AI), 'easyocr', 'passporteye' (traditional), or 'none'"
+    )
+    
+    mrz_confidence: Optional[float] = Field(
+        default=None,
+        description="MRZ OCR confidence percentage (0-100)"
     )
     
     mrz_data: Optional[MRZData] = Field(
@@ -174,6 +179,7 @@ class PassportVerificationResponse(VerificationResponse):
                 "errors": [],
                 "warnings": [],
                 "recommendations": [],
+                "mrz_confidence": 98.5,
                 "mrz_data": {
                     "type": "P",
                     "country": "USA",

@@ -259,6 +259,10 @@ async def _process_passport_verification(
             mrz_data = mrz_results["mrz_data"]
             mrz_confidence = mrz_results.get("confidence", 0.0)
             
+            # Set MRZ confidence in response
+            response.mrz_confidence = mrz_confidence
+            logger.info(f"Setting MRZ confidence in response: {mrz_confidence}")
+            
             # Validate MRZ confidence threshold
             if mrz_confidence < settings.min_mrz_confidence:
                 response.is_valid = False
@@ -364,6 +368,10 @@ async def _process_passport_verification(
         f"Passport verification completed: valid={response.is_valid}, "
         f"mrz_found={response.mrz_found}, errors={len(response.errors)}"
     )
+    
+    # Ensure mrz_confidence is included if MRZ was found
+    if response.mrz_found and hasattr(response, 'mrz_confidence'):
+        logger.info(f"Final MRZ confidence in response: {response.mrz_confidence}")
     
     return response
 
