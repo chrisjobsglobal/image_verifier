@@ -140,14 +140,20 @@ class EnhancedMRZReaderService:
                 
                 logger.info(f"Selected MRZ lines: {mrz_candidates[0][2]+1} and {mrz_candidates[1][2]+1}")
                 
+                # Calculate average confidence from the MRZ lines
+                avg_confidence = sum(conf for text, conf, idx in mrz_candidates[:2]) / 2
+                avg_confidence_pct = avg_confidence * 100  # Convert to percentage
+                
                 mrz_data = self._parse_mrz_lines(mrz_text_lines)
                 
                 if mrz_data:
+                    logger.info(f"✅ MRZ parsed successfully (confidence: {avg_confidence_pct:.1f}%)")
                     return {
                         "mrz_found": True,
                         "ocr_method": "easyocr",
                         "mrz_data": mrz_data,
                         "raw_text": "\n".join(mrz_text_lines),
+                        "confidence": avg_confidence_pct,
                         "errors": [],
                         "warnings": []
                     }
@@ -288,13 +294,24 @@ class EnhancedMRZReaderService:
             country = line1[2:5]
             name_field = line1[5:44].rstrip('<')
             
-            # Fix common OCR error: << (separator) misread as KK or K<
-            # When EasyOCR reads SURNAME<<GIVENNAME, the << often becomes KK
-            # Example: MALLICK<<ASHIK is read as MALLICKK<ASHIK
-            # The second K from the surname gets duplicated, and one < is read as K
-            # Solution: Replace KK< with K<< to restore the separator
+            # Fix common OCR errors in name field:
+            # 1. << (MRZ separator) is often misread as KK by OCR
+            # 2. < (filler) can be misread as K
+            # Strategy: Replace patterns of K that look like they should be <
             import re
-            name_field = re.sub(r'KK<', r'K<<', name_field)
+            
+            # First, normalize multiple K's that represent <<
+            # LANUGANKKKIRK -> LANUGAN<<KIRK (KKK -> <<K)
+            # KKKKKKK -> <<<<<<< (all K become <)
+            
+            # If we see 3+ consecutive K's, they're likely all < fillers
+            name_field = re.sub(r'K{3,}', lambda m: '<' * len(m.group()), name_field)
+            
+            # Replace KK with << (double separator)
+            name_field = name_field.replace('KK', '<<')
+            
+            # If we see K followed by <, it's likely K should also be <
+            name_field = re.sub(r'K<', '<<', name_field)
             
             # Parse name (SURNAME<<GIVEN NAMES)
             name_parts = name_field.split('<<')

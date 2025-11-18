@@ -12,6 +12,7 @@ echo "🔄 Restarting Image Verifier Service..."
 
 # Stop existing service
 echo "⏹️  Stopping existing service..."
+# Kill both master and worker processes
 pkill -f "uvicorn app.main:app"
 sleep 2
 
@@ -19,23 +20,33 @@ sleep 2
 if pgrep -f "uvicorn app.main:app" > /dev/null; then
     echo "⚠️  Service still running, forcing shutdown..."
     pkill -9 -f "uvicorn app.main:app"
+    sleep 2
+fi
+
+# Final check - make sure all processes are gone
+if pgrep -f "uvicorn" > /dev/null; then
+    echo "⚠️  Cleaning up remaining uvicorn processes..."
+    pkill -9 -f "uvicorn"
     sleep 1
 fi
 
 # Start service
 echo "▶️  Starting service on port $PORT..."
 cd "$SCRIPT_DIR"
-nohup "$VENV_PATH/bin/uvicorn" app.main:app --host 0.0.0.0 --port $PORT --workers 4 > "$LOG_FILE" 2>&1 &
+nohup "$VENV_PATH/bin/uvicorn" app.main:app --host 0.0.0.0 --port $PORT --workers 1 > "$LOG_FILE" 2>&1 &
 
 # Wait for service to start
 sleep 3
 
 # Check if service is running
 if pgrep -f "uvicorn app.main:app" > /dev/null; then
-    PID=$(pgrep -f "uvicorn app.main:app")
-    echo "✅ Service started successfully (PID: $PID)"
+    # Get all PIDs (master + workers)
+    PIDS=$(pgrep -f "uvicorn app.main:app" | tr '\n' ' ')
+    echo "✅ Service started successfully (PIDs: $PIDS)"
     echo "📝 Logs: $LOG_FILE"
     echo "🌐 URL: https://document-verifier.jobsglobal.com"
+    echo ""
+    echo "Workers: 4"
     echo ""
     echo "Check health:"
     echo "  curl http://localhost:$PORT/health"

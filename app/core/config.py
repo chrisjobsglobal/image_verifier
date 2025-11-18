@@ -58,13 +58,11 @@ class Settings(BaseSettings):
     min_mrz_confidence: float = 65.0  # Minimum MRZ OCR confidence percentage (0-100)
     mrz_required_fields: str = "surname,names,passport_number,country,nationality,date_of_birth,sex,expiration_date"
     
-    @field_validator('mrz_required_fields', mode='before')
-    @classmethod
-    def parse_mrz_fields(cls, v):
-        """Parse comma-separated string into list"""
-        if isinstance(v, str):
-            return [field.strip() for field in v.split(',') if field.strip()]
-        return v
+    def get_mrz_fields_list(self) -> list[str]:
+        """Get MRZ required fields as a list"""
+        if isinstance(self.mrz_required_fields, str):
+            return [field.strip() for field in self.mrz_required_fields.split(',') if field.strip()]
+        return self.mrz_required_fields
     
     # Tesseract OCR Path (Windows default, adjust if needed)
     tesseract_cmd: Optional[str] = r"C:\Program Files\Tesseract-OCR\tesseract.exe"

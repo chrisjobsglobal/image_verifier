@@ -155,13 +155,19 @@ class EnhancedMRZReaderService:
             # Sort by confidence and take best lines
             all_text_lines.sort(key=lambda x: x["confidence"], reverse=True)
             
+            # Calculate average confidence from top MRZ lines
+            top_lines = all_text_lines[:3]  # Use top 3 lines
+            avg_confidence = sum(line["confidence"] for line in top_lines) / len(top_lines) if top_lines else 0.0
+            avg_confidence_pct = avg_confidence * 100  # Convert to percentage
+            
             # Parse MRZ from text lines
-            mrz_data = self._parse_mrz_lines(all_text_lines[:3])  # Use top 3 lines
+            mrz_data = self._parse_mrz_lines(top_lines)
             
             if mrz_data:
-                logger.info(f"✅ Successfully parsed MRZ with PaddleOCR: {mrz_data.get('surname', 'N/A')}")
+                logger.info(f"✅ Successfully parsed MRZ with PaddleOCR: {mrz_data.get('surname', 'N/A')} (confidence: {avg_confidence_pct:.1f}%)")
                 results["mrz_found"] = True
                 results["mrz_data"] = mrz_data
+                results["confidence"] = avg_confidence_pct
                 
                 # Validate MRZ data
                 validation = self._validate_mrz_data(mrz_data)

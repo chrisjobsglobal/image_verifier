@@ -280,7 +280,7 @@ async def _process_passport_verification(
                 "expiry_date": "Expiration date"
             }
             
-            for field in settings.mrz_required_fields:
+            for field in settings.get_mrz_fields_list():
                 # Map field names (config uses simplified names)
                 mrz_field = field
                 if field == "names":
