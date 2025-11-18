@@ -160,13 +160,6 @@ class FaceDetectionService:
                 "Advanced facial landmark analysis unavailable (MediaPipe not installed). "
                 "Some ICAO compliance checks are limited."
             )
-            
-            # Detect glasses
-            glasses_detected = self.detect_glasses(image, face_landmarks)
-            results["metrics"]["glasses_detected"] = glasses_detected
-            
-            if glasses_detected:
-                results["warnings"].append("Glasses detected - ensure eyes are clearly visible and no reflections")
         
         return results
     
