@@ -4,7 +4,7 @@
 # This script stops and restarts the FastAPI image verification service
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PATH="$SCRIPT_DIR/venv"
+VENV_PATH="$SCRIPT_DIR/venv310"
 LOG_FILE="$SCRIPT_DIR/uvicorn.log"
 PORT=27000
 
@@ -35,7 +35,7 @@ if pgrep -f "uvicorn app.main:app" > /dev/null; then
     PID=$(pgrep -f "uvicorn app.main:app")
     echo "✅ Service started successfully (PID: $PID)"
     echo "📝 Logs: $LOG_FILE"
-    echo "🌐 URL: https://image-verifier.jobsglobal.com"
+    echo "🌐 URL: https://document-verifier.jobsglobal.com"
     echo ""
     echo "Check health:"
     echo "  curl http://localhost:$PORT/health"

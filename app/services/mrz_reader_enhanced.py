@@ -1,10 +1,8 @@
-"""Enhanced MRZ Reader using AI-powered PaddleOCR + PassportEye fallback"""
+"""Enhanced MRZ Reader using AI-powered PaddleOCR"""
 
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, List
 import cv2
 import numpy as np
-from passporteye import read_mrz
-import pytesseract
 import re
 import logging
 from app.core.config import settings
@@ -13,18 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 class EnhancedMRZReaderService:
-    """AI-powered MRZ reader using PaddleOCR with PassportEye fallback"""
+    """AI-powered MRZ reader using PaddleOCR"""
     
     def __init__(self):
-        # Set Tesseract path if configured
-        if settings.tesseract_cmd:
-            pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
-        
         # Initialize PaddleOCR (lazy loading)
         self._paddle_ocr = None
-        # Disable PaddleOCR on this server (CPU instruction incompatibility)
-        self._paddle_available = False
-        logger.info("PaddleOCR disabled - using PassportEye only")
+        # Enable PaddleOCR for Xeon Gold CPU
+        self._paddle_available = True
+        logger.info("PaddleOCR enabled for AI-powered MRZ reading")
     
     @property
     def paddle_ocr(self):
@@ -33,14 +27,18 @@ class EnhancedMRZReaderService:
             try:
                 from paddleocr import PaddleOCR
                 # Initialize with English language for MRZ
-                # Note: PaddleOCR 3.x changed parameter names
+                # Optimized for Xeon Gold CPU performance
                 self._paddle_ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang='en',
-                    enable_mkldnn=False,  # CPU optimization
-                    use_tensorrt=False    # No GPU
+                    use_gpu=False,           # CPU mode
+                    enable_mkldnn=True,      # Intel MKL-DNN for Xeon CPUs
+                    cpu_threads=8,           # Utilize multi-core Xeon
+                    use_tensorrt=False,      # CPU only, no TensorRT
+                    ir_optim=True,           # Enable inference optimization
+                    show_log=False           # Reduce log noise
                 )
-                logger.info("PaddleOCR initialized successfully")
+                logger.info("PaddleOCR initialized successfully with Xeon Gold optimizations")
             except Exception as e:
                 logger.warning(f"PaddleOCR initialization failed: {e}. Will use PassportEye fallback.")
                 self._paddle_available = False
@@ -50,7 +48,7 @@ class EnhancedMRZReaderService:
         """
         Read MRZ from passport image using AI-powered OCR.
         
-        Uses PaddleOCR as primary method, falls back to PassportEye if needed.
+        Uses PaddleOCR for high-accuracy MRZ detection.
         
         Args:
             image: Image as numpy array in BGR format
@@ -68,7 +66,7 @@ class EnhancedMRZReaderService:
         }
         
         try:
-            # Try PaddleOCR first (higher accuracy)
+            # Use PaddleOCR for MRZ reading
             if self._paddle_available:
                 logger.info("Attempting MRZ reading with PaddleOCR...")
                 paddle_result = self._read_mrz_with_paddle(image)
@@ -79,19 +77,11 @@ class EnhancedMRZReaderService:
                     results["ocr_method"] = "paddleocr"
                     return results
                 else:
-                    logger.info("PaddleOCR did not find MRZ, trying PassportEye fallback...")
-            
-            # Fallback to PassportEye
-            logger.info("Attempting MRZ reading with PassportEye...")
-            passporteye_result = self._read_mrz_with_passporteye(image)
-            
-            if passporteye_result["mrz_found"]:
-                logger.info("✅ MRZ successfully read with PassportEye")
-                results.update(passporteye_result)
-                results["ocr_method"] = "passporteye"
+                    logger.warning("❌ No MRZ found with PaddleOCR")
+                    results["errors"].append("No MRZ detected in passport image")
             else:
-                logger.warning("❌ No MRZ found with either method")
-                results["errors"].append("No MRZ detected in passport image with any OCR method")
+                logger.error("PaddleOCR not available")
+                results["errors"].append("OCR engine not available")
         
         except Exception as e:
             logger.error(f"Error reading MRZ: {str(e)}", exc_info=True)
@@ -186,71 +176,6 @@ class EnhancedMRZReaderService:
         
         return results
     
-    def _read_mrz_with_passporteye(self, image: np.ndarray) -> Dict:
-        """Read MRZ using PassportEye (fallback method)"""
-        results = {
-            "mrz_found": False,
-            "mrz_data": {},
-            "errors": [],
-            "warnings": []
-        }
-        
-        try:
-            # Preprocess image for better MRZ detection
-            preprocessed = self._preprocess_for_mrz(image)
-            
-            # Encode image to bytes for PassportEye
-            success, encoded_image = cv2.imencode('.jpg', preprocessed)
-            if not success:
-                results["errors"].append("Failed to encode image for MRZ reading")
-                return results
-            
-            image_bytes = encoded_image.tobytes()
-            
-            # Read MRZ using PassportEye
-            mrz = read_mrz(image_bytes)
-            
-            if mrz is None:
-                return results
-            
-            results["mrz_found"] = True
-            
-            # Extract MRZ data
-            mrz_data = mrz.to_dict()
-            
-            # Parse and structure MRZ data
-            if mrz_data:
-                results["mrz_data"] = {
-                    "type": mrz_data.get("type", ""),
-                    "country": mrz_data.get("country", ""),
-                    "surname": mrz_data.get("surname", ""),
-                    "names": mrz_data.get("names", ""),
-                    "passport_number": mrz_data.get("number", ""),
-                    "nationality": mrz_data.get("nationality", ""),
-                    "date_of_birth": mrz_data.get("date_of_birth", ""),
-                    "sex": mrz_data.get("sex", ""),
-                    "expiration_date": mrz_data.get("expiration_date", ""),
-                    "personal_number": mrz_data.get("personal_number", ""),
-                    "check_digits": {
-                        "number": mrz_data.get("check_number", ""),
-                        "date_of_birth": mrz_data.get("check_date_of_birth", ""),
-                        "expiration_date": mrz_data.get("check_expiration_date", ""),
-                        "personal_number": mrz_data.get("check_personal_number", ""),
-                        "composite": mrz_data.get("check_composite", "")
-                    },
-                    "raw_mrz_text": mrz_data.get("mrz_text", "")
-                }
-                
-                # Validate MRZ data
-                validation = self._validate_mrz_data(results["mrz_data"])
-                results["is_valid"] = validation["valid"]
-                results["errors"] = validation["errors"]
-                results["warnings"] = validation["warnings"]
-        
-        except Exception as e:
-            logger.error(f"PassportEye error: {e}", exc_info=True)
-        
-        return results
     
     def _is_mrz_line(self, text: str) -> bool:
         """Check if text line looks like MRZ"""
@@ -429,26 +354,6 @@ class EnhancedMRZReaderService:
         # Convert back to BGR for PaddleOCR
         return cv2.cvtColor(denoised, cv2.COLOR_GRAY2BGR)
     
-    def _preprocess_for_mrz(self, image: np.ndarray) -> np.ndarray:
-        """Preprocess image for better MRZ detection"""
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Apply bilateral filter to reduce noise while keeping edges sharp
-        filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-        
-        # Apply adaptive thresholding
-        thresh = cv2.adaptiveThreshold(
-            filtered, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 
-            11, 2
-        )
-        
-        # Convert back to BGR for PassportEye
-        preprocessed = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
-        
-        return preprocessed
     
     def _validate_mrz_data(self, mrz_data: Dict) -> Dict:
         """Validate MRZ data for completeness and check digit validation"""
