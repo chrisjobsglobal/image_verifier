@@ -294,24 +294,9 @@ class EnhancedMRZReaderService:
             country = line1[2:5]
             name_field = line1[5:44].rstrip('<')
             
-            # Fix common OCR errors in name field:
-            # 1. << (MRZ separator) is often misread as KK by OCR
-            # 2. < (filler) can be misread as K
-            # Strategy: Replace patterns of K that look like they should be <
-            import re
-            
-            # First, normalize multiple K's that represent <<
-            # LANUGANKKKIRK -> LANUGAN<<KIRK (KKK -> <<K)
-            # KKKKKKK -> <<<<<<< (all K become <)
-            
-            # If we see 3+ consecutive K's, they're likely all < fillers
-            name_field = re.sub(r'K{3,}', lambda m: '<' * len(m.group()), name_field)
-            
-            # Replace KK with << (double separator)
-            name_field = name_field.replace('KK', '<<')
-            
-            # If we see K followed by <, it's likely K should also be <
-            name_field = re.sub(r'K<', '<<', name_field)
+            # Fix common OCR error: << is often misread as KK
+            # MALLICKK< should become MALLICK<< (KK< -> K<<)
+            name_field = name_field.replace('KK<', 'K<<')
             
             # Parse name (SURNAME<<GIVEN NAMES)
             name_parts = name_field.split('<<')
